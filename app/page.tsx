@@ -128,9 +128,9 @@ export default function Desk() {
         </div>
       )}
       <main className="desk">
-        {view === "scanner" ? (
-          <Scanner onOpen={(s) => { setSelected(s); setView("desk"); }} />
-        ) : (
+        {/* The scanner stays mounted so a finished scan is still there after visiting the desk. */}
+        <Scanner hidden={view !== "scanner"} onOpen={(s) => { setSelected(s); setView("desk"); }} />
+        {view === "desk" && (
           <>
             <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={selected} onSelect={setSelected}
               error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) setSelected(s); loadWatchlist(); }} />

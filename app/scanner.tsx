@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cls, fmtPct, fmtPx, market } from "./format";
 import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
@@ -8,10 +8,37 @@ import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 type Row = { symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[] };
 type Img = { mime: "image/jpeg"; data: string; preview: string };
+type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string };
+type Saved = Result & { id: string; at: string; universe: string; themes: string[]; length: string };
 
 const UNIVERSES: [string, string][] = [["SP500", "S&P 500"], ["NDX", "Nasdaq 100"], ["SET50", "SET50"], ["SET100", "SET100"]];
 const THEMES: [string, string][] = [["TECH", "Tech"], ["MEDICAL", "Medical"], ["FINANCE", "Finance"], ["ENERGY", "Energy"], ["FINTECH", "Fintech"]];
 const LENGTHS: [string, string, string][] = [["short", "Short", "1–3 months"], ["medium", "Medium", "3–6 months"], ["long", "Long", "6–12 months"]];
+// Finished scans are kept in this browser so they survive reloads and tab switches.
+const STORE = "keranos.scans.v1";
+const MAX_SAVED = 30;
+function loadSaved(): Saved[] {
+  try { const v = JSON.parse(localStorage.getItem(STORE) ?? "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+function storeSaved(list: Saved[]) {
+  try { localStorage.setItem(STORE, JSON.stringify(list)); } catch { /* storage full or blocked: keep in memory only */ }
+}
+const uniLabel = (id: string) => UNIVERSES.find((u) => u[0] === id)?.[1] ?? id;
+const themeLabel = (ids: string[]) => (ids.length ? ids.map((t) => THEMES.find((x) => x[0] === t)?.[1] ?? t).join(", ") : "All themes");
+const fmtWhen = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+function downloadCsv(s: Saved) {
+  const esc = (v: unknown) => { const t = v == null ? "" : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  const head = ["symbol", "name", "description", "sector", "match_pct", "days", "from", "to", "height_pct", "close", "change_pct"];
+  const lines = s.rows.map((r) => [r.symbol, r.name, r.description, r.sector, r.score, r.bars, r.from, r.to, r.heightPct, r.close, r.change?.toFixed(2)].map(esc).join(","));
+  const blob = new Blob(["\ufeff" + [head.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `scan-${s.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${s.universe}-${s.at.slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 const BIAS_CLS: Record<Bias, string> = { bullish: "up", bearish: "down", neutral: "muted" };
 
 /** Downsize an image in the browser so the upload stays small. */
@@ -28,7 +55,7 @@ async function readImage(file: File): Promise<Img> {
   return { mime: "image/jpeg", data: url.slice(url.indexOf(",") + 1), preview: url };
 }
 
-export default function Scanner({ onOpen }: { onOpen: (symbol: string) => void }) {
+export default function Scanner({ onOpen, hidden }: { onOpen: (symbol: string) => void; hidden?: boolean }) {
   const [pattern, setPattern] = useState<string>("double_bottom");
   const [img, setImg] = useState<Img | null>(null);
   const [universe, setUniverse] = useState("SET100");
@@ -37,7 +64,12 @@ export default function Scanner({ onOpen }: { onOpen: (symbol: string) => void }
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ text: string; done?: number; total?: number } | null>(null);
   const [traced, setTraced] = useState<{ name: string; bias: Bias; points: number[] } | null>(null);
-  const [result, setResult] = useState<{ rows: Row[]; checked: number; note?: string; shape: number[]; label: string } | null>(null);
+  const [result, setResult] = useState<Saved | null>(null);
+  const [saved, setSaved] = useState<Saved[]>([]);
+  // Reopen the latest scan after a reload.
+  useEffect(() => { const list = loadSaved(); setSaved(list); setResult((r) => r ?? list[0] ?? null); }, []);
+  const save = (s: Saved) => setSaved((list) => { const next = [s, ...list.filter((x) => x.id !== s.id)].slice(0, MAX_SAVED); storeSaved(next); return next; });
+  const remove = (id: string) => setSaved((list) => { const next = list.filter((x) => x.id !== id); storeSaved(next); return next; });
   const [error, setError] = useState<string | null>(null);
   const ctl = useRef<AbortController | null>(null);
   const fileEl = useRef<HTMLInputElement>(null);
@@ -83,7 +115,11 @@ export default function Scanner({ onOpen }: { onOpen: (symbol: string) => void }
           const ev = JSON.parse(part.slice(6));
           if (ev.type === "status") setStatus(ev);
           else if (ev.type === "shape") { setTraced(ev); shape = ev.points; label = ev.name; }
-          else if (ev.type === "results") setResult({ rows: ev.rows, checked: ev.checked, note: ev.note, shape, label });
+          else if (ev.type === "results") {
+            const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: ev.rows, checked: ev.checked, note: ev.note, shape, label };
+            setResult(s);
+            save(s);
+          }
           else if (ev.type === "error") setError(ev.message);
         }
       }
@@ -95,7 +131,7 @@ export default function Scanner({ onOpen }: { onOpen: (symbol: string) => void }
   }
 
   return (
-    <section className="pane scanner" aria-labelledby="scan-h"
+    <section className="pane scanner" aria-labelledby="scan-h" hidden={hidden}
       onPaste={(e) => { const f = Array.from(e.clipboardData.files).find((x) => x.type.startsWith("image/")); if (f) pick(f); }}>
       <div className="pane-h"><h2 id="scan-h">Pattern scanner</h2><span className="label">Daily charts</span></div>
 
@@ -172,7 +208,11 @@ export default function Scanner({ onOpen }: { onOpen: (symbol: string) => void }
       {error && <div className="note warn">{error}</div>}
       {result && (
         <div className="scan-results">
-          <div className="pane-h sub"><h2>{result.rows.length ? `${result.rows.length} matches · ${result.label}` : "No close matches"}</h2><span className="label">{result.checked} charts checked</span></div>
+          <div className="pane-h sub">
+            <div><h2>{result.rows.length ? `${result.rows.length} matches · ${result.label}` : `No close matches · ${result.label}`}</h2>
+              <div className="muted" style={{ fontSize: 12 }}>{uniLabel(result.universe)} · {themeLabel(result.themes)} · {result.checked} charts checked · saved {fmtWhen(result.at)}</div></div>
+            {result.rows.length > 0 && <button type="button" className="btn" onClick={() => downloadCsv(result)}>Download CSV</button>}
+          </div>
           {result.note && <div className="note">{result.note}</div>}
           {!result.rows.length && <div className="note">Nothing scored 60% or more. Try another pattern length, market or theme.</div>}
           <ul className="hits">
@@ -194,6 +234,22 @@ export default function Scanner({ onOpen }: { onOpen: (symbol: string) => void }
           <p className="note">Shape match on daily closes. A match is a starting point for your own chart reading, not a confirmed setup or advice.</p>
         </div>
       )}
+      <div className="scan-saved">
+        <div className="pane-h sub"><h2>Saved scans</h2><span className="label">{saved.length ? `${saved.length} in this browser` : ""}</span></div>
+        {!saved.length ? <div className="note">Every finished scan is saved here automatically.</div> : (
+          <ul className="saved">
+            {saved.map((s) => (
+              <li key={s.id} aria-current={result?.id === s.id}>
+                <button type="button" className="saved-open" onClick={() => { setResult(s); setTraced(null); setError(null); }}>
+                  <b>{s.label}</b> <span className="muted">· {uniLabel(s.universe)} · {themeLabel(s.themes)}</span>
+                  <span className="saved-meta">{fmtWhen(s.at)} · {s.rows.length} matches{s.rows[0] ? ` · top ${s.rows.slice(0, 3).map((r) => r.name).join(", ")}` : ""}</span>
+                </button>
+                <button type="button" className="saved-x" aria-label={`Delete saved scan from ${fmtWhen(s.at)}`} onClick={() => { remove(s.id); if (result?.id === s.id) setResult(null); }}>×</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 }
