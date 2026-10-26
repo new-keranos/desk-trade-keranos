@@ -56,6 +56,7 @@ async function tv<T = any>(tool: string, input: Record<string, unknown> = {}): P
   const r = await fetch("/api/tv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }) });
   const j = await r.json().catch(() => ({}));
   if (r.status === 401) { location.href = "/login"; throw new Error("Signed out"); }
+  if (r.status === 409 && j.connect) window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
   if (!r.ok) throw new Error(j.error || `TradingView request failed (${r.status})`);
   return j.data as T;
 }
@@ -89,6 +90,15 @@ export default function Desk() {
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [filter, setFilter] = useState<"all" | Market>("all");
   const [selected, setSelected] = useState<string | null>(null);
+  const [connect, setConnect] = useState<string | null>(null);
+
+  useEffect(() => {
+    const err = new URLSearchParams(location.search).get("tv_error");
+    if (err) { setConnect(err); history.replaceState(null, "", "/"); }
+    const on = (e: Event) => setConnect((e as CustomEvent<string>).detail || "Connect TradingView to load your data.");
+    window.addEventListener("nova:tv-connect", on);
+    return () => window.removeEventListener("nova:tv-connect", on);
+  }, []);
 
   const loadWatchlist = useCallback(async () => {
     try {
@@ -129,6 +139,12 @@ export default function Desk() {
           })}
         </div>
       </header>
+      {connect && (
+        <div className="connect-bar" role="alert">
+          <span>{connect}</span>
+          <a className="btn primary" href="/api/tv/connect">Connect TradingView</a>
+        </div>
+      )}
       <main className="desk">
         <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={selected} onSelect={setSelected}
           error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) setSelected(s); loadWatchlist(); }} />
@@ -392,6 +408,11 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
       const res = await fetch("/api/nova", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
         body: JSON.stringify({ messages: history, effort, watchlist: symbols, selected }) });
       if (res.status === 401) { location.href = "/login"; return; }
+      if (res.status === 409) {
+        const j = await res.json().catch(() => ({}));
+        window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
+        throw new Error(j.error || "Connect TradingView first.");
+      }
       if (!res.ok || !res.body) throw new Error("Nova is unavailable right now.");
       const reader = res.body.getReader();
       const dec = new TextDecoder();

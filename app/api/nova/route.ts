@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { ApiError } from "@google/genai";
 import { z } from "zod";
 import { runNova, type NovaEvent } from "@/lib/nova";
+import { openTv, originOf, TvAuthError } from "@/lib/tradingview";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -19,12 +20,20 @@ export async function POST(req: Request) {
   const { messages, effort, watchlist, selected } = parsed.data;
   if (messages[messages.length - 1].role !== "user") return Response.json({ error: "Last message must be from the user" }, { status: 400 });
 
+  // Open TradingView before streaming: a token refresh may need to update the login cookie.
+  let tv: Awaited<ReturnType<typeof openTv>>;
+  try {
+    tv = await openTv(originOf(req));
+  } catch (err) {
+    return Response.json({ error: (err as Error).message, connect: err instanceof TvAuthError }, { status: err instanceof TvAuthError ? 409 : 502 });
+  }
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       const emit = (e: NovaEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       try {
-        await runNova({ history: messages, effort, watchlist, selected, emit, signal: req.signal });
+        await runNova({ history: messages, effort, watchlist, selected, tv: tv.call, emit, signal: req.signal });
       } catch (err) {
         let message = "Nova was interrupted. Send again to retry.";
         if (err instanceof ApiError) {
@@ -40,6 +49,7 @@ export async function POST(req: Request) {
       } finally {
         emit({ type: "done" });
         controller.close();
+        await tv.close();
       }
     },
   });

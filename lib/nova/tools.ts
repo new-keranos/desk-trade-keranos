@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { callTv, TV } from "../tradingview";
+import { TV, type TvCaller } from "../tradingview";
 
 export const PERSONA = `You are Nova, a calm, data-first market analyst working for Neal.
 You cover US stocks, the Thai SET (including mai) and crypto.
@@ -45,7 +45,7 @@ const clip = (v: unknown) => {
 
 /** Provider-neutral tool definition: JSON Schema input, zod validation, server-side runner. */
 export type ToolSpec = { name: string; description: string; input_schema: { type: "object"; properties: Record<string, unknown>; required?: string[] } };
-export type NovaContext = { watchlist: string[]; selected: string | null };
+export type NovaContext = { watchlist: string[]; selected: string | null; tv: TvCaller };
 
 type ToolDef = {
   tool: ToolSpec;
@@ -60,15 +60,15 @@ const defs: ToolDef[] = [
       input_schema: { type: "object", properties: { symbols: { type: "array", items: { type: "string" } } }, required: ["symbols"] } },
     schema: z.object({ symbols: z.array(sym).min(1).max(50) }),
     label: (i) => `quotes ${i.symbols.join(", ")}`,
-    run: (i) => callTv(TV.quotes, { symbols: i.symbols }),
+    run: (i, _e, ctx) => ctx.tv(TV.quotes, { symbols: i.symbols }),
   },
   {
     tool: { name: "get_price_history", description: "OHLCV summary (period high/low, net change %, average volume) plus the last 30 closes. interval: 1h 4h 1D 1W. count = number of bars, default 126 (about 6 months daily).",
       input_schema: { type: "object", properties: { symbol: { type: "string", description: SYMBOL_DESC }, interval: { type: "string" }, count: { type: "integer" } }, required: ["symbol"] } },
     schema: z.object({ symbol: sym, interval: z.string().max(4).optional(), count: z.number().int().min(5).max(1000).optional() }),
     label: (i) => `history ${i.symbol}`,
-    run: async (i) => {
-      const p = (await callTv(TV.ohlcv, { symbol: i.symbol, interval: i.interval ?? "1D", count: i.count ?? 126, format: "columns" })) as any;
+    run: async (i, _e, ctx) => {
+      const p = (await ctx.tv(TV.ohlcv, { symbol: i.symbol, interval: i.interval ?? "1D", count: i.count ?? 126, format: "columns" })) as any;
       const t: number[] = p?.bars?.t ?? [];
       return { symbol: p?.symbol, interval: p?.interval, summary: p?.summary, last_closes: (p?.bars?.c ?? []).slice(-30),
         last_dates: t.slice(-30).map((x) => new Date(x * 1000).toISOString().slice(0, 10)) };
@@ -79,15 +79,15 @@ const defs: ToolDef[] = [
       input_schema: { type: "object", properties: { symbol: { type: "string", description: SYMBOL_DESC }, interval: { type: "string", description: "1h 4h 1D 1W, default 1D" } }, required: ["symbol"] } },
     schema: z.object({ symbol: sym, interval: z.string().max(4).optional() }),
     label: (i) => `technicals ${i.symbol}`,
-    run: (i) => callTv(TV.technicals, { symbol: i.symbol, interval: i.interval ?? "1D" }),
+    run: (i, _e, ctx) => ctx.tv(TV.technicals, { symbol: i.symbol, interval: i.interval ?? "1D" }),
   },
   {
     tool: { name: "get_news", description: "Latest headlines for a symbol: title, provider, published time.",
       input_schema: { type: "object", properties: { symbol: { type: "string", description: SYMBOL_DESC }, limit: { type: "integer" } }, required: ["symbol"] } },
     schema: z.object({ symbol: sym, limit: z.number().int().min(1).max(15).optional() }),
     label: (i) => `news ${i.symbol}`,
-    run: async (i) => {
-      const p = (await callTv(TV.news, { symbol: i.symbol, limit: i.limit ?? 8 })) as any;
+    run: async (i, _e, ctx) => {
+      const p = (await ctx.tv(TV.news, { symbol: i.symbol, limit: i.limit ?? 8 })) as any;
       return (p?.data?.headlines ?? []).map((h: any) => ({ title: h.title, provider: h.provider?.name, published: new Date(h.published * 1000).toISOString() }));
     },
   },
@@ -96,14 +96,14 @@ const defs: ToolDef[] = [
       input_schema: { type: "object", properties: { symbol: { type: "string", description: SYMBOL_DESC } }, required: ["symbol"] } },
     schema: z.object({ symbol: sym }),
     label: (i) => `fundamentals ${i.symbol}`,
-    run: (i) => callTv(TV.financials, { symbol: i.symbol }),
+    run: (i, _e, ctx) => ctx.tv(TV.financials, { symbol: i.symbol }),
   },
   {
     tool: { name: "get_analyst_forecasts", description: "Analyst consensus, buy/hold/sell counts, price targets with upside %.",
       input_schema: { type: "object", properties: { symbol: { type: "string", description: SYMBOL_DESC } }, required: ["symbol"] } },
     schema: z.object({ symbol: sym }),
     label: (i) => `forecasts ${i.symbol}`,
-    run: (i) => callTv(TV.forecasts, { symbol: i.symbol }),
+    run: (i, _e, ctx) => ctx.tv(TV.forecasts, { symbol: i.symbol }),
   },
   {
     tool: { name: "run_screener", description: "TradingView screener. market: america | thailand | crypto. filters like {\"rsi\":[null,40],\"div_yield\":[3,null],\"market_cap_basic\":[1e9,null]}. filter_preset: pullback_with_reversal, breakout_with_volume, oversold_healthy, earnings_runup, relative_strength, new_highs. Returns up to 15 rows.",
@@ -111,35 +111,35 @@ const defs: ToolDef[] = [
     schema: z.object({ market: z.string().max(32), filters: z.record(z.any()).optional(), filter_preset: z.string().max(64).optional(),
       sort_by: z.string().max(64).optional(), sort_order: z.enum(["asc", "desc"]).optional(), columns: z.array(z.string().max(64)).max(20).optional() }),
     label: (i) => `screener ${i.market}`,
-    run: (i) => callTv(TV.screener, { ...i, limit: 15 }),
+    run: (i, _e, ctx) => ctx.tv(TV.screener, { ...i, limit: 15 }),
   },
   {
     tool: { name: "get_earnings_calendar", description: "Next and last earnings dates with EPS and revenue forecasts for the given symbols.",
       input_schema: { type: "object", properties: { symbols: { type: "array", items: { type: "string" } }, date_to: { type: "string", description: "YYYY-MM-DD" } }, required: ["symbols"] } },
     schema: z.object({ symbols: z.array(sym).min(1).max(50), date_to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }),
     label: () => "earnings",
-    run: (i) => callTv(TV.earnings, i),
+    run: (i, _e, ctx) => ctx.tv(TV.earnings, i),
   },
   {
     tool: { name: "get_dividends", description: "Dividend ex-dates, amounts and yields. Pass symbols, or market (america, thailand) with an optional date_to.",
       input_schema: { type: "object", properties: { symbols: { type: "array", items: { type: "string" } }, market: { type: "string" }, date_to: { type: "string" } } } },
     schema: z.object({ symbols: z.array(sym).max(50).optional(), market: z.string().max(32).optional(), date_to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }),
     label: () => "dividends",
-    run: (i) => callTv(TV.dividends, { ...i, limit: 40 }),
+    run: (i, _e, ctx) => ctx.tv(TV.dividends, { ...i, limit: 40 }),
   },
   {
     tool: { name: "get_economic_calendar", description: "Macro events (rates, CPI, GDP). countries: US or TH etc. Dates YYYY-MM-DD, up to 31 days ahead. min_importance 0 = medium and high.",
       input_schema: { type: "object", properties: { countries: { type: "string" }, date_from: { type: "string" }, date_to: { type: "string" }, min_importance: { type: "integer" } } } },
     schema: z.object({ countries: z.string().max(40).optional(), date_from: z.string().max(25).optional(), date_to: z.string().max(25).optional(), min_importance: z.number().int().min(-1).max(1).optional() }),
     label: (i) => `macro ${i.countries ?? "US"}`,
-    run: (i) => callTv(TV.economic, { countries: i.countries ?? "US", min_importance: i.min_importance ?? 0, ...(i.date_from && { date_from: i.date_from }), ...(i.date_to && { date_to: i.date_to }) }),
+    run: (i, _e, ctx) => ctx.tv(TV.economic, { countries: i.countries ?? "US", min_importance: i.min_importance ?? 0, ...(i.date_from && { date_from: i.date_from }), ...(i.date_to && { date_to: i.date_to }) }),
   },
   {
     tool: { name: "search_symbols", description: "Resolve a ticker or company name to EXCHANGE:TICKER.",
       input_schema: { type: "object", properties: { query: { type: "string" }, type_filter: { type: "string" } }, required: ["query"] } },
     schema: z.object({ query: z.string().min(1).max(80), type_filter: z.string().max(20).optional() }),
     label: (i) => `search ${i.query}`,
-    run: async (i) => (((await callTv(TV.search, i)) as any)?.data?.symbols ?? []).slice(0, 6),
+    run: async (i, _e, ctx) => (((await ctx.tv(TV.search, i)) as any)?.data?.symbols ?? []).slice(0, 6),
   },
   {
     tool: { name: "get_dashboard", description: "What Neal sees now: watchlist symbols, the selected symbol and today's date.",

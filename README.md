@@ -13,7 +13,7 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
                  └─> /api/nova  ──> Gemini or Claude ── tool calls ──> TradingView MCP server
 ```
 
-- `lib/tradingview.ts` connects to a remote TradingView MCP server over Streamable HTTP.
+- `lib/tradingview.ts` connects to TradingView's official MCP server (`https://mcp.tradingview.com/mcp`, Streamable HTTP) and signs in with OAuth 2.1. The login is kept in an encrypted httpOnly cookie. Needs a TradingView Essential plan or higher.
 - `lib/nova/tools.ts` holds the persona prompt and the TradingView tools. Edit `PERSONA` to change how Nova talks.
 - `lib/nova/gemini.ts` runs Nova on Gemini (default, `gemini-2.5-flash`, free tier). `lib/nova/claude.ts` runs it on Claude (`claude-opus-5-5`). Pick with `AI_PROVIDER`. API keys stay on the server.
 - `middleware.ts` puts the whole app behind one password.
@@ -29,10 +29,11 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
 1. Copy `.env.example` to `.env.local` and fill in:
    - `GEMINI_API_KEY` from https://aistudio.google.com/apikey (free).
    - Optional: `AI_PROVIDER=claude` plus `ANTHROPIC_API_KEY` from https://console.anthropic.com to run Nova on Claude (billed per token).
-   - `TRADINGVIEW_MCP_URL` and `TRADINGVIEW_MCP_TOKEN`: the URL of your TradingView MCP server and a token for it.
-   - `APP_PASSWORD`: any password you choose.
+   - `APP_PASSWORD`: any password you choose, and `SESSION_SECRET`: a long random string.
+   - On a deployed site, `APP_URL` with its public address.
 2. `npm install`
 3. `npm run dev` and open http://localhost:3000
+4. Sign in, then press **Connect TradingView** and log in with your TradingView account. You only do this once per browser.
 
 ## Deploy on Vercel
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { callTv, READ_TOOLS, WRITE_TOOLS, TvError } from "@/lib/tradingview";
+import { openTv, originOf, READ_TOOLS, WRITE_TOOLS, TvAuthError, TvError } from "@/lib/tradingview";
 
 export const runtime = "nodejs";
 
@@ -10,11 +10,14 @@ export async function POST(req: Request) {
   if (!READ_TOOLS.has(tool) && !WRITE_TOOLS.has(tool)) {
     return NextResponse.json({ error: `Tool not allowed: ${tool}` }, { status: 400 });
   }
+  let tv;
   try {
-    const data = await callTv(tool, input);
-    return NextResponse.json({ data });
+    tv = await openTv(originOf(req));
+    return NextResponse.json({ data: await tv.call(tool, input) });
   } catch (err) {
-    const status = err instanceof TvError ? 502 : 500;
-    return NextResponse.json({ error: (err as Error).message }, { status });
+    if (err instanceof TvAuthError) return NextResponse.json({ error: err.message, connect: true }, { status: 409 });
+    return NextResponse.json({ error: (err as Error).message }, { status: err instanceof TvError ? 502 : 500 });
+  } finally {
+    await tv?.close();
   }
 }
