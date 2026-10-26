@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
+import Scanner from "./scanner";
 
 // ---------- helpers ----------
 type Quote = { description?: string; close?: number; change?: number; change_abs?: number; volume?: number | null;
@@ -18,32 +20,6 @@ type LogItem =
   | { id: number; kind: "nova"; text: string; steps: string[]; pending: boolean; error?: string }
   | { id: number; kind: "confirm"; proposal: Proposal; status: "open" | "working" | "done" | "cancelled" | "failed"; note?: string };
 
-const CRYPTO_EX = ["BINANCE", "COINBASE", "BYBIT", "OKX", "KRAKEN", "BITSTAMP", "CRYPTOCAP", "CRYPTO", "BITGET", "KUCOIN"];
-type Market = "US" | "SET" | "CRYPTO";
-function market(sym: string): Market {
-  const ex = sym.split(":")[0].toUpperCase();
-  if (ex === "SET" || ex === "MAI" || ex === "TFEX") return "SET";
-  if (CRYPTO_EX.includes(ex)) return "CRYPTO";
-  return "US";
-}
-const ccy = (s: string) => ({ SET: "THB", CRYPTO: "USDT", US: "USD" })[market(s)];
-function fmtPx(v?: number | null) {
-  if (v == null || !isFinite(v)) return "—";
-  const a = Math.abs(v);
-  const d = a >= 1 ? 2 : a >= 0.01 ? 4 : 6;
-  return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
-}
-const fmtPct = (v?: number | null) => (v == null || !isFinite(v) ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%");
-function fmtBig(v?: number | null) {
-  if (v == null || !isFinite(v)) return "—";
-  const a = Math.abs(v);
-  if (a >= 1e12) return (v / 1e12).toFixed(2) + "T";
-  if (a >= 1e9) return (v / 1e9).toFixed(2) + "B";
-  if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
-  if (a >= 1e3) return (v / 1e3).toFixed(1) + "K";
-  return String(Math.round(v));
-}
-const cls = (v?: number | null) => (v == null ? "muted" : v > 0 ? "up" : v < 0 ? "down" : "muted");
 function ago(unix: number) {
   const s = Math.max(0, Date.now() / 1000 - unix);
   if (s < 3600) return Math.round(s / 60) + "m ago";
@@ -80,6 +56,7 @@ function md(text: string) {
 const PULSE: [string, string][] = [["SP:SPX", "S&P 500"], ["NASDAQ:NDX", "Nasdaq 100"], ["SET:SET", "SET"], ["BINANCE:BTCUSDT", "BTC"], ["CRYPTOCAP:TOTAL", "Crypto cap"]];
 const QUOTE_COLS = ["name", "description", "close", "change", "change_abs", "volume", "market_cap_basic", "price_earnings_ttm", "sector", "high", "low"];
 const CMDS: [string, string][] = [["brief", "brief"], ["analyze", "analyze"], ["compare", "compare NASDAQ:AAPL NASDAQ:MSFT"], ["scan", "scan momentum US"],
+  ["pattern", "pattern double bottom SET100"],
   ["SET dividends", "dividends SET"], ["earnings", "earnings this week"], ["macro US", "macro US"], ["macro TH", "macro TH"]];
 
 // ---------- page ----------
@@ -91,6 +68,7 @@ export default function Desk() {
   const [filter, setFilter] = useState<"all" | Market>("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [connect, setConnect] = useState<string | null>(null);
+  const [view, setView] = useState<"desk" | "scanner">("desk");
 
   useEffect(() => {
     const err = new URLSearchParams(location.search).get("tv_error");
@@ -127,6 +105,10 @@ export default function Desk() {
     <>
       <header className="top">
         <div className="brand"><h1>Keranos <span>Desk</span></h1><small>US · SET · Crypto</small></div>
+        <nav className="views chips" aria-label="View">
+          <button className="chip" aria-pressed={view === "desk"} onClick={() => setView("desk")}>Desk</button>
+          <button className="chip" aria-pressed={view === "scanner"} onClick={() => setView("scanner")}>Pattern scanner</button>
+        </nav>
         <div className="pulse" aria-label="Market pulse">
           {PULSE.map(([s, n]) => {
             const q = quotes[s];
@@ -146,9 +128,15 @@ export default function Desk() {
         </div>
       )}
       <main className="desk">
-        <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={selected} onSelect={setSelected}
-          error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) setSelected(s); loadWatchlist(); }} />
-        <Focus symbol={selected} quote={selected ? quotes[selected] : undefined} />
+        {view === "scanner" ? (
+          <Scanner onOpen={(s) => { setSelected(s); setView("desk"); }} />
+        ) : (
+          <>
+            <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={selected} onSelect={setSelected}
+              error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) setSelected(s); loadWatchlist(); }} />
+            <Focus symbol={selected} quote={selected ? quotes[selected] : undefined} />
+          </>
+        )}
         <section className="stack console-col" aria-label="Nova console">
           <Console symbols={symbols} selected={selected} watchlistId={watchlistId} onWatchlistChanged={loadWatchlist} />
           <Alerts />

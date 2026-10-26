@@ -4,6 +4,7 @@ A web app for commanding an AI market analyst ("Nova") over your TradingView dat
 
 - **Dashboard:** your TradingView watchlist with live quotes, a market pulse strip (S&P 500, Nasdaq 100, SET, BTC, total crypto cap), a daily chart, technical rating, news and active alerts.
 - **Nova console:** type commands such as `brief`, `analyze SET:PTT`, `scan dividend SET`, `macro TH` or `alert BTC below 75000`. Nova calls TradingView tools for every number.
+- **Pattern scanner:** pick a chart pattern (double bottom, cup and handle, head and shoulders, triangles, flags, wedges and more) or upload a picture of the shape you want. Choose S&P 500, Nasdaq 100, SET50 or SET100, and narrow by theme (Tech, Medical, Finance, Energy, Fintech). It ranks stocks whose recent daily chart matches the shape.
 - **Safe by design:** Nova can only *propose* alerts and watchlist changes. Nothing changes in TradingView until you press Confirm. There is no trading.
 
 ## How it works
@@ -16,6 +17,7 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
 - `lib/tradingview.ts` connects to TradingView's official MCP server (`https://mcp.tradingview.com/mcp`, Streamable HTTP) and signs in with OAuth 2.1. The login is kept in an encrypted httpOnly cookie. Needs a TradingView Essential plan or higher.
 - `lib/nova/tools.ts` holds the persona prompt and the TradingView tools. Edit `PERSONA` to change how Nova talks.
 - `lib/nova/gemini.ts` runs Nova on Gemini (default, `gemini-flash-latest`, free tier). `lib/nova/claude.ts` runs it on Claude (`claude-opus-5-5`). Pick with `AI_PROVIDER`. API keys stay on the server.
+- `lib/scan/` is the pattern scanner. `templates.ts` holds the pattern shapes, `match.ts` scores a price window against a shape (correlation plus time-warped distance), `universe.ts` maps markets and themes to TradingView screener filters, and `shape.ts` asks Gemini (or Claude) to trace the pattern in an uploaded image. One scan checks up to 80 stocks, largest first, to stay inside TradingView's limit of about 100 calls a minute.
 - `middleware.ts` puts the whole app behind one password.
 - On Claude, refusal fallback is on (`fallbacks: "default"`), so a declined request is retried on a fallback model automatically.
 
@@ -56,5 +58,6 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
 | macro | `macro US`, `macro TH` |
 | alert | `alert TSLA below 200` |
 | watch | `watch add SET:KBANK` |
+| pattern | `pattern double bottom SET100 energy` |
 
 Not financial advice.
