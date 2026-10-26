@@ -15,7 +15,7 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
 
 - `lib/tradingview.ts` connects to TradingView's official MCP server (`https://mcp.tradingview.com/mcp`, Streamable HTTP) and signs in with OAuth 2.1. The login is kept in an encrypted httpOnly cookie. Needs a TradingView Essential plan or higher.
 - `lib/nova/tools.ts` holds the persona prompt and the TradingView tools. Edit `PERSONA` to change how Nova talks.
-- `lib/nova/gemini.ts` runs Nova on Gemini (default, `gemini-2.5-flash`, free tier). `lib/nova/claude.ts` runs it on Claude (`claude-opus-5-5`). Pick with `AI_PROVIDER`. API keys stay on the server.
+- `lib/nova/gemini.ts` runs Nova on Gemini (default, `gemini-flash-latest`, free tier). `lib/nova/claude.ts` runs it on Claude (`claude-opus-5-5`). Pick with `AI_PROVIDER`. API keys stay on the server.
 - `middleware.ts` puts the whole app behind one password.
 - On Claude, refusal fallback is on (`fallbacks: "default"`), so a declined request is retried on a fallback model automatically.
 
