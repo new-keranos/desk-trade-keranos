@@ -135,7 +135,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
   return (
     <section className="pane scanner" aria-labelledby="scan-h" hidden={hidden}
       onPaste={(e) => { const f = Array.from(e.clipboardData.files).find((x) => x.type.startsWith("image/")); if (f) pick(f); }}>
-      <div className="pane-h"><h2 id="scan-h">Pattern scanner</h2><span className="label">Daily charts</span></div>
+      <div className="pane-h"><h2 id="scan-h">Find stocks by chart shape</h2><span className="label">Daily charts</span></div>
 
       <div className="scan-sec">
         <div className="label">Pattern</div>

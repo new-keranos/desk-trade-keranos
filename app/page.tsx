@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
 import Scanner, { type PatternHit } from "./scanner";
 import TvChart, { rangeSince, type TvRange } from "./tvchart";
@@ -103,51 +103,65 @@ export default function Desk() {
     return () => { live = false; clearInterval(id); };
   }, [quoteSet]);
 
+  const open = (s: string) => { setSelected(s); setView("desk"); };
   return (
-    <>
-      <header className="top">
-        <div className="brand"><h1>Keranos <span>Desk</span></h1><small>US · SET · Crypto</small></div>
-        <nav className="views chips" aria-label="View">
-          <button className="chip" aria-pressed={view === "desk"} onClick={() => setView("desk")}>Desk</button>
-          <button className="chip" aria-pressed={view === "scanner"} onClick={() => setView("scanner")}>Pattern scanner</button>
+    <div className="app">
+      <aside className="side" aria-label="Navigation and watchlist">
+        <div className="brand">
+          <span className="logo" aria-hidden="true">K</span>
+          <div><h1>Keranos Desk</h1><small>US · SET · Crypto</small></div>
+        </div>
+        <nav className="nav" aria-label="View">
+          <div className="nav-h">Explore</div>
+          <button className="nav-i" aria-current={view === "desk"} onClick={() => setView("desk")}><Icon d="M3 17l5-6 4 3 5-7 4 4M3 21h18" />Desk</button>
+          <button className="nav-i" aria-current={view === "scanner"} onClick={() => setView("scanner")}><Icon d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15zM16 16l5 5M6.5 12l2.5-3 2 2 2.5-3.5" />Pattern scanner</button>
         </nav>
-        <div className="pulse" aria-label="Market pulse">
-          {PULSE.map(([s, n]) => {
-            const q = quotes[s];
-            return (
-              <div key={s}><b>{n}</b>
-                <span className="num">{q ? (s === "CRYPTOCAP:TOTAL" ? "$" + fmtBig(q.close) : fmtPx(q.close)) : "—"}</span>
-                {q && <span className={"num " + cls(q.change)}>{fmtPct(q.change)}</span>}
-              </div>
-            );
-          })}
-        </div>
-      </header>
-      {connect && (
-        <div className="connect-bar" role="alert">
-          <span>{connect}</span>
-          <a className="btn primary" href="/api/tv/connect">Connect TradingView</a>
-        </div>
-      )}
-      <main className="desk">
-        {/* The scanner stays mounted so a finished scan is still there after visiting the desk. */}
-        <Scanner hidden={view !== "scanner"} onOpen={(hit) => { setSelected(hit.symbol); setPattern(hit); setView("desk"); window.scrollTo({ top: 0 }); }} />
-        {view === "desk" && (
-          <>
-            <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={selected} onSelect={setSelected}
-              error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) setSelected(s); loadWatchlist(); }} />
+        <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={view === "desk" ? selected : null} onSelect={open}
+          error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) open(s); loadWatchlist(); }} />
+        <Alerts />
+        <p className="foot">Data from TradingView, delayed or realtime per your plan. Nova&apos;s answers are research, not financial advice.</p>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <h2>{view === "desk" ? "Desk" : "Pattern scanner"}</h2>
+          <div className="pulse" aria-label="Market pulse">
+            {PULSE.map(([s, n]) => {
+              const q = quotes[s];
+              return (
+                <div key={s}><b>{n}</b>
+                  <span className="num">{q ? (s === "CRYPTOCAP:TOTAL" ? "$" + fmtBig(q.close) : fmtPx(q.close)) : "—"}</span>
+                  {q && <span className={"num " + cls(q.change)}>{fmtPct(q.change)}</span>}
+                </div>
+              );
+            })}
+          </div>
+        </header>
+        {connect && (
+          <div className="connect-bar" role="alert">
+            <span>{connect}</span>
+            <a className="btn primary" href="/api/tv/connect">Connect TradingView</a>
+          </div>
+        )}
+        <div className="content">
+          {/* The scanner stays mounted so a finished scan is still there after visiting the desk. */}
+          <Scanner hidden={view !== "scanner"} onOpen={(hit) => { setPattern(hit); open(hit.symbol); document.querySelector(".main")?.scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }} />
+          {view === "desk" && (
             <Focus symbol={selected} quote={selected ? quotes[selected] : undefined}
               pattern={pattern?.symbol === selected ? pattern : null} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")} />
-          </>
-        )}
-        <section className="stack console-col" aria-label="Nova console">
-          <Console symbols={symbols} selected={selected} watchlistId={watchlistId} onWatchlistChanged={loadWatchlist} />
-          <Alerts />
-        </section>
+          )}
+        </div>
       </main>
-      <p className="foot">Data from TradingView, delayed or realtime per your plan. Nova&apos;s answers are research, not financial advice.</p>
-    </>
+
+      <aside className="right" aria-label="Nova console">
+        <Console symbols={symbols} selected={selected} watchlistId={watchlistId} onWatchlistChanged={loadWatchlist} />
+      </aside>
+    </div>
   );
+}
+
+function Icon({ d }: { d: string }) {
+  return <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>;
 }
 
 // ---------- watchlist ----------
@@ -177,8 +191,8 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
   }
 
   return (
-    <aside className="pane" aria-labelledby="wl-h">
-      <div className="pane-h"><h2 id="wl-h">Watchlist</h2><span className="label">{p.symbols.length ? `${p.symbols.length} symbols` : ""}</span></div>
+    <section className="side-sec" aria-labelledby="wl-h">
+      <div className="side-h"><h2 id="wl-h">Watchlist</h2><span className="label">{p.symbols.length ? `${p.symbols.length} symbols` : ""}</span></div>
       <div className="wl-filter chips" role="group" aria-label="Market filter">
         {(["all", "US", "SET", "CRYPTO"] as const).map((f) => (
           <button key={f} className="chip" aria-pressed={p.filter === f} onClick={() => p.setFilter(f)}>{f === "all" ? "All" : f === "CRYPTO" ? "Crypto" : f}</button>
@@ -206,7 +220,7 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
         <input id="wl-add-in" value={value} onChange={(e) => setValue(e.target.value)} placeholder={hint} aria-label="Add a symbol to the watchlist" autoComplete="off" />
         <button className="btn" type="submit" disabled={busy}>Add</button>
       </form>
-    </aside>
+    </section>
   );
 }
 
@@ -262,24 +276,27 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
           )}
         </div>
         <div className="chart-bar">
-          <div className="ranges chips" role="group" aria-label="Chart range">
-            {RANGES.map(([l, n]) => (
-              <button key={l} className="chip" aria-pressed={range === n} onClick={() => setRange(n)}>{l}</button>
-            ))}
-          </div>
+          {mode === "line" ? (
+            <div className="ranges chips" role="group" aria-label="Chart range">
+              {RANGES.map(([l, n]) => (
+                <button key={l} className="chip" aria-pressed={range === n} onClick={() => setRange(n)}>{l}</button>
+              ))}
+            </div>
+          ) : <span className="muted" style={{ fontSize: 12 }}>Daily candles · use the chart&apos;s own range buttons</span>}
           <div className="chips" role="group" aria-label="Chart type">
             <button className="chip" aria-pressed={mode === "tv"} onClick={() => setMode("tv")}>TradingView</button>
             <button className="chip" aria-pressed={mode === "line"} onClick={() => setMode("line")}>Line</button>
           </div>
         </div>
         <div className="chart-wrap">
-          {mode === "tv" && symbol ? <TvChart symbol={symbol} range={(RANGES.find((x) => x[1] === range) ?? RANGES[2])[2]} />
+          {mode === "tv" && symbol ? <TvChart symbol={symbol} range={pattern ? rangeSince(pattern.from) : undefined} />
             : err.chart ? <div className="note warn">{err.chart}</div> : bars?.c?.length ? <Chart bars={bars} range={range} highlight={pattern} /> : <div className="note">Loading chart…</div>}
         </div>
         <dl className="stats" style={{ margin: 0 }}>
           {stats.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
         </dl>
       </div>
+      <div className="focus-grid">
       <div className="pane">
         <div className="pane-h"><h2>Technicals · daily</h2>{tech && <TechPill rec={tech.summary?.recommendation} />}</div>
         {err.tech ? <div className="note warn">{err.tech}</div> : tech ? <TechBody t={tech} /> : <div className="note">Loading technicals…</div>}
@@ -297,6 +314,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
               </li>
             ))}
         </ul>
+      </div>
       </div>
     </section>
   );
@@ -341,12 +359,13 @@ function Chart({ bars, range, highlight }: { bars: Bars; range: number; highligh
   const col = up ? "var(--up)" : "var(--down)";
   const chg = (c[n - 1] / c[0] - 1) * 100;
   const dl = (i: number) => new Date(t[i] * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const fillId = "fill" + useId().replace(/:/g, "");
   return (
     <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Daily closes over ${n} sessions, ${fmtPct(chg)}`}>
-      <defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor={col} stopOpacity=".18" /><stop offset="1" stopColor={col} stopOpacity="0" /></linearGradient></defs>
+      <defs><linearGradient id={fillId} x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor={col} stopOpacity=".18" /><stop offset="1" stopColor={col} stopOpacity="0" /></linearGradient></defs>
       {[0, 1, 2, 3, 4].map((k) => {
         const v = lo + (k / 4) * (hi - lo), yy = y(v);
-        return <g key={k}><line x1={L} x2={W - R} y1={yy} y2={yy} stroke="var(--line)" /><text x={W - R + 6} y={yy + 4} fontSize="11" fill="var(--muted)" fontFamily="IBM Plex Mono, monospace">{fmtPx(v)}</text></g>;
+        return <g key={k}><line x1={L} x2={W - R} y1={yy} y2={yy} stroke="var(--line)" /><text x={W - R + 6} y={yy + 4} fontSize="11" fill="var(--muted)" fontFamily="Roboto Mono, monospace">{fmtPx(v)}</text></g>;
       })}
       {(() => {
         if (!highlight) return null;
@@ -359,13 +378,13 @@ function Chart({ bars, range, highlight }: { bars: Bars; range: number; highligh
         return <g><rect x={x(i0)} y={T} width={x(i1) - x(i0)} height={H - T - B} fill="var(--accent-soft)" opacity=".85" />
           <polyline points={sp} fill="none" stroke="var(--accent-fill)" strokeWidth="2" strokeDasharray="5 4" /></g>;
       })()}
-      <polygon points={`${x(0)},${H - B} ${pts} ${x(n - 1)},${H - B}`} fill="url(#fill)" />
+      <polygon points={`${x(0)},${H - B} ${pts} ${x(n - 1)},${H - B}`} fill={`url(#${fillId})`} />
       <polyline points={pts} fill="none" stroke={col} strokeWidth="1.8" strokeLinejoin="round" />
       <circle cx={x(n - 1)} cy={y(c[n - 1])} r="3.5" fill={col} />
       {[0, Math.floor((n - 1) / 2), n - 1].map((i, k) => (
         <text key={k} x={x(i)} y={H - 6} fontSize="11" fill="var(--muted)" textAnchor={(["start", "middle", "end"] as const)[k]}>{dl(i)}</text>
       ))}
-      <text x={L} y={T + 2} fontSize="11" fill={col} fontFamily="IBM Plex Mono, monospace" dominantBaseline="hanging">{fmtPct(chg)} over range</text>
+      <text x={L} y={T + 2} fontSize="11" fill={col} fontFamily="Roboto Mono, monospace" dominantBaseline="hanging">{fmtPct(chg)} over range</text>
     </svg>
   );
 }
@@ -407,8 +426,8 @@ function Alerts() {
     return () => { live = false; clearInterval(id); window.removeEventListener("nova:alerts-changed", onChange); };
   }, []);
   return (
-    <div className="pane">
-      <div className="pane-h"><h2>Active alerts</h2><span className="label">{alerts?.length ? `${alerts.length} active` : ""}</span></div>
+    <section className="side-sec">
+      <div className="side-h"><h2>Active alerts</h2><span className="label">{alerts?.length ? `${alerts.length} active` : ""}</span></div>
       <ul className="alerts">
         {err ? <li className="note warn">{err}</li>
           : !alerts ? <li className="note">Loading alerts…</li>
@@ -421,7 +440,7 @@ function Alerts() {
             </li>
           ))}
       </ul>
-    </div>
+    </section>
   );
 }
 
