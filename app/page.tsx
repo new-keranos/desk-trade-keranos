@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
 import Scanner, { type PatternHit } from "./scanner";
-import TvChart, { rangeSince, type TvRange } from "./tvchart";
+import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
 
 // ---------- helpers ----------
 type Quote = { description?: string; close?: number; change?: number; change_abs?: number; volume?: number | null;
@@ -286,6 +286,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
           <div className="chips" role="group" aria-label="Chart type">
             <button className="chip" aria-pressed={mode === "tv"} onClick={() => setMode("tv")}>TradingView</button>
             <button className="chip" aria-pressed={mode === "line"} onClick={() => setMode("line")}>Line</button>
+            {symbol && <a className="ext" href={tvChartUrl(symbol)} target="_blank" rel="noopener noreferrer" style={{ alignSelf: "center", marginLeft: 6 }}>Open in TradingView ↗</a>}
           </div>
         </div>
         <div className="chart-wrap">

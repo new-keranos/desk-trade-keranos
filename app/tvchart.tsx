@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-
-// TradingView's free Advanced Chart widget: an interactive candle chart in an iframe served by TradingView.
+// TradingView's free chart widget: an interactive candle chart in an iframe served by TradingView.
 // It shows TradingView's public data, so it doesn't use the signed-in MCP connection.
-const SRC = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+// We render the iframe ourselves (instead of TradingView's loader script) so its size is ours to set:
+// the loader script kept collapsing the chart to a short strip.
 
 export type TvRange = "1M" | "3M" | "6M" | "12M" | "60M";
 
@@ -15,26 +14,19 @@ export function rangeSince(from: string): TvRange {
   return months <= 12 ? "12M" : "60M";
 }
 
-export default function TvChart({ symbol, range, height = 460 }: { symbol: string; range?: TvRange; height?: number }) {
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    const dark = document.documentElement.dataset.theme !== "light";
-    el.innerHTML = `<div class="tradingview-widget-container__widget" style="height:${height}px;width:100%"></div>`;
-    const s = document.createElement("script");
-    s.src = SRC;
-    s.async = true;
-    s.type = "text/javascript";
-    s.innerHTML = JSON.stringify({
-      symbol, interval: "D", ...(range && { range }), timezone: "Asia/Bangkok", theme: dark ? "dark" : "light", style: "1", locale: "en",
-      // Fixed height: with autosize the widget can collapse to a thin strip.
-      autosize: false, width: "100%", height, allow_symbol_change: false, hide_side_toolbar: false, withdateranges: true, details: false,
-      ...(dark && { backgroundColor: "rgba(30, 31, 32, 1)", gridColor: "rgba(255, 255, 255, 0.05)" }),
-      support_host: "https://www.tradingview.com",
-    });
-    el.appendChild(s);
-    return () => { el.innerHTML = ""; };
-  }, [symbol, range, height]);
-  return <div ref={box} className="tradingview-widget-container tv-chart" style={{ height }} />;
+export default function TvChart({ symbol, range }: { symbol: string; range?: TvRange }) {
+  const dark = typeof document === "undefined" || document.documentElement.dataset.theme !== "light";
+  const q = new URLSearchParams({
+    symbol, interval: "D", ...(range && { range }), theme: dark ? "dark" : "light", style: "1", timezone: "Asia/Bangkok", locale: "en",
+    hidesidetoolbar: "0", symboledit: "0", saveimage: "1", withdateranges: "1", toolbarbg: dark ? "1e1f20" : "f1f3f6",
+  });
+  return (
+    <div className="tv-chart">
+      <iframe key={symbol + (range ?? "")} title={`TradingView chart for ${symbol}`} src={`https://s.tradingview.com/widgetembed/?${q}`}
+        allow="clipboard-write; fullscreen" allowFullScreen />
+    </div>
+  );
 }
+
+/** The full TradingView chart page for a symbol. */
+export const tvChartUrl = (symbol: string) => `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(symbol)}`;
