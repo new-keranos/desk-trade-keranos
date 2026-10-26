@@ -1,4 +1,4 @@
-# Nova Desk
+# Keranos Desk
 
 A web app for commanding an AI market analyst ("Nova") over your TradingView data. Covers US stocks, the Thai SET and crypto.
 

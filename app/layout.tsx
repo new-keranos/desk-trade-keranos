@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Nova Desk",
+  title: "Keranos Desk",
   description: "Command an AI market analyst over your TradingView data. US, Thai SET and crypto.",
 };
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover" };

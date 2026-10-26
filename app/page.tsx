@@ -126,7 +126,7 @@ export default function Desk() {
   return (
     <>
       <header className="top">
-        <div className="brand"><h1>Nova <span>Desk</span></h1><small>US · SET · Crypto</small></div>
+        <div className="brand"><h1>Keranos <span>Desk</span></h1><small>US · SET · Crypto</small></div>
         <div className="pulse" aria-label="Market pulse">
           {PULSE.map(([s, n]) => {
             const q = quotes[s];

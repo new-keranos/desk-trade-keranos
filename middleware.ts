@@ -6,7 +6,7 @@ export async function middleware(req: NextRequest) {
   if (pathname === "/login" || pathname === "/api/login") return NextResponse.next();
   const expected = await sessionToken();
   if (!expected) {
-    return new NextResponse("Set APP_PASSWORD to use Nova Desk.", { status: 503 });
+    return new NextResponse("Set APP_PASSWORD to use Keranos Desk.", { status: 503 });
   }
   if (req.cookies.get(COOKIE)?.value === expected) return NextResponse.next();
   if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Not signed in" }, { status: 401 });

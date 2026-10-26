@@ -48,7 +48,7 @@ type Stored = { client?: OAuthClientInformationMixed; tokens?: OAuthTokens; veri
 function key(): Buffer {
   const secret = process.env.SESSION_SECRET || process.env.APP_PASSWORD;
   if (!secret) throw new TvError("Set SESSION_SECRET (or APP_PASSWORD) to store the TradingView login.");
-  return createHash("sha256").update("nova-desk-tv:" + secret).digest();
+  return createHash("sha256").update("keranos-desk-tv:" + secret).digest();
 }
 function seal(data: Stored): string {
   const iv = randomBytes(12);
@@ -76,7 +76,7 @@ class CookieProvider implements OAuthClientProvider {
   get redirectUrl() { return `${this.origin}/api/tv/callback`; }
   get clientMetadata(): OAuthClientMetadata {
     return {
-      client_name: "Nova Desk",
+      client_name: "Keranos Desk",
       redirect_uris: [this.redirectUrl],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
@@ -136,7 +136,7 @@ export async function openTv(origin: string): Promise<{ call: TvCaller; close: (
   const p = await provider(origin);
   if (!p.tokens()) throw new TvAuthError("Connect TradingView first.");
   const transport = new StreamableHTTPClientTransport(new URL(TV_MCP_URL), { authProvider: p });
-  const client = new Client({ name: "nova-desk", version: "0.2.0" });
+  const client = new Client({ name: "keranos-desk", version: "0.2.0" });
   try {
     await client.connect(transport);
   } catch (err) {
