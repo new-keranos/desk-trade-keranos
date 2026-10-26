@@ -330,17 +330,21 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
   );
 }
 
-/** The scanner match on the dashboard: where the pattern sits on the chart, and a button to have Nova check it. */
-/** The scanner match on the dashboard, with a button to have Nova check it. The pattern is drawn on the candles below. */
+/** The scanner match on the dashboard, with a button to have Nova check it. The AI's marks are drawn on the candles below. */
 function PatternPane({ p, onClear, onBack }: { p: PatternHit; onClear: () => void; onBack: () => void }) {
+  const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
-    `analyze pattern ${p.symbol} ${p.label} ${p.from} ${p.to} (scanner: ${p.score}% match, ${p.bars} days, height ${p.heightPct}%)` }));
+    `analyze pattern ${p.symbol} ${p.label} ${p.from} ${p.to} (scanner AI: ${p.score}% sure, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
   return (
     <div className="pane pattern-pane">
       <div className="pane-h">
-        <div><h2>{p.label} · <span className="num">{p.score}%</span> match</h2>
-          <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · dashed line on the chart below</div>
-          {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {c}</span>)}</div>}</div>
+        <div><h2>{p.label} · AI <span className="num">{p.score}%</span> sure{p.stage && <span className="stage">{p.stage}</span>}</h2>
+          <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · the AI&apos;s points and lines are drawn on the chart below</div>
+          {p.summary && <div className="hit-ai" style={{ marginTop: 6 }}>{p.summary}</div>}
+          {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {c}</span>)}</div>}
+          {(p.breakout != null || p.invalidation != null) && <div className="hit-levels num" style={{ marginTop: 4 }}>
+            {p.breakout != null && <span>Breakout level <b>{fmtPx(p.breakout)}</b></span>}
+            {p.invalidation != null && <span className="muted">Invalid past {fmtPx(p.invalidation)}</span>}</div>}</div>
         <div className="row">
           <button className="btn primary" type="button" onClick={ask}>Analyze with Nova</button>
           <button className="btn" type="button" onClick={onBack}>Back to scan</button>

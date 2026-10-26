@@ -7,7 +7,9 @@ import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 
 type Row = { symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
-  checks?: string[]; points?: { k: number; date: string; price: number }[] };
+  checks?: string[]; points?: { k: number; date: string; price: number; label?: string }[];
+  lines?: { from: { date: string; price: number }; to: { date: string; price: number }; role: "upper" | "lower" | "level"; label: string; extend: boolean }[];
+  stage?: string; summary?: string; breakout?: number; invalidation?: number };
 type Img = { mime: "image/jpeg"; data: string; preview: string };
 type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string };
 /** A scanner match opened on the dashboard. */
@@ -32,8 +34,8 @@ const fmtWhen = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "n
 
 function downloadCsv(s: Saved) {
   const esc = (v: unknown) => { const t = v == null ? "" : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
-  const head = ["symbol", "name", "description", "sector", "match_pct", "days", "from", "to", "height_pct", "close", "change_pct"];
-  const lines = s.rows.map((r) => [r.symbol, r.name, r.description, r.sector, r.score, r.bars, r.from, r.to, r.heightPct, r.close, r.change?.toFixed(2)].map(esc).join(","));
+  const head = ["symbol", "name", "description", "sector", "ai_confidence_pct", "stage", "days", "from", "to", "height_pct", "breakout", "invalidation", "close", "change_pct", "summary"];
+  const lines = s.rows.map((r) => [r.symbol, r.name, r.description, r.sector, r.score, r.stage, r.bars, r.from, r.to, r.heightPct, r.breakout, r.invalidation, r.close, r.change?.toFixed(2), r.summary].map(esc).join(","));
   const blob = new Blob(["\ufeff" + [head.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -43,6 +45,7 @@ function downloadCsv(s: Saved) {
 }
 
 const BIAS_CLS: Record<Bias, string> = { bullish: "up", bearish: "down", neutral: "muted" };
+const STAGE: Record<string, string> = { forming: "forming", complete: "complete", breakout: "breakout", failed: "failed" };
 
 /** Downsize an image in the browser so the upload stays small. */
 async function readImage(file: File): Promise<Img> {
@@ -66,7 +69,6 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
   const [length, setLength] = useState("medium");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ text: string; done?: number; total?: number } | null>(null);
-  const [traced, setTraced] = useState<{ name: string; bias: Bias; points: number[] } | null>(null);
   const [result, setResult] = useState<Saved | null>(null);
   const [saved, setSaved] = useState<Saved[]>([]);
   // Reopen the latest scan after a reload.
@@ -82,7 +84,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
 
   async function pick(file?: File | null) {
     if (!file) return;
-    try { setImg(await readImage(file)); setPattern("image"); setTraced(null); setError(null); }
+    try { setImg(await readImage(file)); setPattern("image"); setError(null); }
     catch (e) { setError((e as Error).message); }
   }
 
@@ -90,10 +92,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
     if (busy) return;
     if (usingImage && !img) { setError("Add a reference image first."); return; }
     setBusy(true); setError(null); setResult(null); setStatus({ text: "Starting" });
-    if (usingImage) setTraced(null);
     const t = TEMPLATES.find((x) => x.id === pattern);
-    let shape = t ? sampleAnchors(t.anchors, N) : [];
-    let label = t?.name ?? "Your pattern";
+    const shape = t ? sampleAnchors(t.anchors, N) : [];
+    const label = t?.name ?? "Your image pattern";
     ctl.current = new AbortController();
     try {
       const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
@@ -117,7 +118,6 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
           if (!part.startsWith("data: ")) continue;
           const ev = JSON.parse(part.slice(6));
           if (ev.type === "status") setStatus(ev);
-          else if (ev.type === "shape") { setTraced(ev); shape = ev.points; label = ev.name; }
           else if (ev.type === "results") {
             const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: ev.rows, checked: ev.checked, note: ev.note, shape, label };
             setResult(s);
@@ -136,7 +136,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
   return (
     <section className="pane scanner" aria-labelledby="scan-h" hidden={hidden}
       onPaste={(e) => { const f = Array.from(e.clipboardData.files).find((x) => x.type.startsWith("image/")); if (f) pick(f); }}>
-      <div className="pane-h"><h2 id="scan-h">Find stocks by chart shape</h2><span className="label">Daily charts</span></div>
+      <div className="pane-h"><h2 id="scan-h">Find stocks by chart pattern</h2><span className="label">Daily charts · read by AI</span></div>
 
       <div className="scan-sec">
         <div className="label">Pattern</div>
@@ -200,12 +200,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
             {status.total ? <progress max={status.total} value={status.done ?? 0} /> : null}
           </div>
         )}
-        {traced && (
-          <div className="scan-traced">
-            <Spark points={traced.points} bias={traced.bias} />
-            <span>Read your image as <b>{traced.name}</b> <span className={BIAS_CLS[traced.bias]}>({traced.bias})</span></span>
-          </div>
-        )}
+        {!busy && <span className="muted" style={{ fontSize: 12 }}>AI reads each chart and judges it against {usingImage ? "your image" : "the pattern's textbook rules"}</span>}
       </div>
 
       {error && <div className="note warn">{error}</div>}
@@ -217,25 +212,29 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
             {result.rows.length > 0 && <button type="button" className="btn" onClick={() => downloadCsv(result)}>Download CSV</button>}
           </div>
           {result.note && <div className="note">{result.note}</div>}
-          {!result.rows.length && <div className="note">Nothing scored 60% or more. Try another pattern length, market or theme.</div>}
+          {!result.rows.length && <div className="note">The AI wasn&apos;t at least 60% sure about any chart. Try another pattern length, market or theme.</div>}
           <ul className="hits">
             {result.rows.map((r) => (
               <li key={r.symbol}>
-                <button type="button" onClick={() => onOpen({ ...r, label: result.label, shape: result.shape })} aria-label={`Open ${r.symbol}, ${r.score}% match`}>
-                  <span className="hit-t"><b>{r.name}</b><span className="mkt">{market(r.symbol)}</span><span className="hit-d">{r.description}</span></span>
+                <button type="button" onClick={() => onOpen({ ...r, label: result.label, shape: result.shape })} aria-label={`Open ${r.symbol}, AI ${r.score}% sure`}>
+                  <span className="hit-t"><b>{r.name}</b><span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}<span className="hit-d">{r.description}</span></span>
                   <span className="hit-score num">{r.score}%</span>
                   <MatchChart closes={r.closes} shape={result.shape} points={r.points} bars={r.bars} />
                   <span className="hit-meta">
                     <span className="num">{fmtPx(r.close)} <span className={cls(r.change)}>{fmtPct(r.change)}</span></span>
                     <span>{r.bars} days · {fmtDay(r.from)} – {fmtDay(r.to)} · height {r.heightPct}%</span>
                     {r.sector && <span className="muted">{r.sector}</span>}
+                    {r.summary && <span className="hit-ai">{r.summary}</span>}
                     {!!r.checks?.length && <span className="hit-checks">{r.checks.map((c) => <span key={c}>✓ {c}</span>)}</span>}
+                    {(r.breakout != null || r.invalidation != null) && <span className="hit-levels num">
+                      {r.breakout != null && <span>Breakout level <b>{fmtPx(r.breakout)}</b></span>}
+                      {r.invalidation != null && <span className="muted">Invalid past {fmtPx(r.invalidation)}</span>}</span>}
                   </span>
                 </button>
               </li>
             ))}
           </ul>
-          <p className="note">Shape match on daily closes. A match is a starting point for your own chart reading, not a confirmed setup or advice.</p>
+          <p className="note">The % is the AI&apos;s confidence after reading the daily bars. It is a starting point for your own chart reading, not a confirmed setup or advice.</p>
         </div>
       )}
       <div className="scan-saved">
@@ -244,7 +243,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
           <ul className="saved">
             {saved.map((s) => (
               <li key={s.id} aria-current={result?.id === s.id}>
-                <button type="button" className="saved-open" onClick={() => { setResult(s); setTraced(null); setError(null); }}>
+                <button type="button" className="saved-open" onClick={() => { setResult(s); setError(null); }}>
                   <b>{s.label}</b> <span className="muted">· {uniLabel(s.universe)} · {themeLabel(s.themes)}</span>
                   <span className="saved-meta">{fmtWhen(s.at)} · {s.rows.length} matches{s.rows[0] ? ` · top ${s.rows.slice(0, 3).map((r) => r.name).join(", ")}` : ""}</span>
                 </button>

@@ -1,9 +1,8 @@
 import "server-only";
 import { z } from "zod";
 import { TV, type TvCaller } from "../tradingview";
-import { N, normalize } from "../scan/match";
 import { runScan } from "../scan/run";
-import { sampleAnchors, templateById, TEMPLATES } from "../scan/templates";
+import { templateById, TEMPLATES } from "../scan/templates";
 import { THEMES, UNIVERSES } from "../scan/universe";
 
 export const PERSONA = `You are Nova, a calm, data-first market analyst working for Neal.
@@ -24,7 +23,7 @@ Rules:
 Commands: brief (watchlist summary: movers, ratings, news, earnings this week), analyze <ticker>, compare <a> <b>, scan <style> <market>, news <ticker>, earnings <period>, dividends <market>, macro <US|TH>, alert <ticker> <above|below> <price>, watch <add|remove> <ticker>,
 pattern <pattern> <SP500|NDX|SET50|SET100> [theme] (chart-pattern scan, e.g. pattern double bottom SET100 energy).
 analyze pattern <ticker> <pattern> <from> <to> (check a scanner match: call get_pattern_bars and get_technicals, then say whether the swing points really form that pattern, the neckline or breakout level, whether price has broken out and on what volume, the level that would invalidate it, and a measured-move level to watch).
-For pattern scans, call scan_chart_patterns. Present the best 3 to 5 matches with match %, the pattern's date span and height, and say a shape match is a starting point, not a confirmed setup.
+For pattern scans, call scan_chart_patterns. Present the best 3 to 5 matches with AI confidence %, the date span, stage and breakout level, and say an AI read is a starting point, not a confirmed setup.
 If a message is not a command, answer it as a question using the same rules.
 
 Symbols use EXCHANGE:TICKER. US: NASDAQ:, NYSE:, AMEX:. Thai: SET:. Crypto: BINANCE:<COIN>USDT. If unsure, call search_symbols.
@@ -149,7 +148,7 @@ const defs: ToolDef[] = [
     run: async (i, _e, ctx) => (((await ctx.tv(TV.search, i)) as any)?.data?.symbols ?? []).slice(0, 6),
   },
   {
-    tool: { name: "scan_chart_patterns", description: `Scan a market for stocks whose recent daily chart matches a chart pattern. pattern: ${TEMPLATES.map((t) => t.id).join(", ")}. universe: ${Object.keys(UNIVERSES).join(", ")}. themes (optional, any of): ${Object.keys(THEMES).join(", ")}. length: short (1-3 months), medium (3-6 months, default), long (6-12 months). Matches must pass the pattern's price rules (e.g. equal lows, rim levels). Returns the best matches with match % (60-100), date span, pattern height % and the rules each passed.`,
+    tool: { name: "scan_chart_patterns", description: `Scan a market for stocks whose recent daily chart matches a chart pattern. pattern: ${TEMPLATES.map((t) => t.id).join(", ")}. universe: ${Object.keys(UNIVERSES).join(", ")}. themes (optional, any of): ${Object.keys(THEMES).join(", ")}. length: short (1-3 months), medium (3-6 months, default), long (6-12 months). An AI reads each chart against the textbook definition. Returns the matches with AI confidence % (60-100), date span, pattern height %, stage, evidence (Thai), breakout and invalidation levels.`,
       input_schema: { type: "object", properties: { pattern: { type: "string" }, universe: { type: "string" }, themes: { type: "array", items: { type: "string" } }, length: { type: "string" } }, required: ["pattern", "universe"] } },
     schema: z.object({ pattern: z.string().max(40), universe: z.enum(Object.keys(UNIVERSES) as [keyof typeof UNIVERSES]),
       themes: z.array(z.enum(Object.keys(THEMES) as [string])).max(5).optional(), length: z.enum(["short", "medium", "long"]).optional() }),
@@ -157,8 +156,8 @@ const defs: ToolDef[] = [
     run: async (i, _e, ctx) => {
       const t = templateById(i.pattern);
       if (!t) throw new Error(`Unknown pattern. Use one of: ${TEMPLATES.map((x) => x.id).join(", ")}`);
-      const r = await runScan({ tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", shape: normalize(sampleAnchors(t.anchors, N)), template: t, limit: 10 }, () => {});
-      return { pattern: t.name, bias: t.bias, checked: r.checked, note: r.note, matches: r.rows.map(({ closes: _c, points: _p, ...row }) => row) };
+      const r = await runScan({ tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", template: t, limit: 10 }, () => {});
+      return { pattern: t.name, bias: t.bias, checked: r.checked, note: r.note, matches: r.rows.map(({ closes: _c, points: _p, lines: _l, ...row }) => row) };
     },
   },
   {

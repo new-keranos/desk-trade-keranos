@@ -1,9 +1,8 @@
 import "server-only";
 import { GoogleGenAI, type Content, type Part } from "@google/genai";
+import { GEMINI_MODEL } from "./config";
 import { contextLine, executeTool, MAX_ROUNDS, OUT_OF_ROUNDS, PERSONA, TOOL_SPECS, type RunOptions } from "./tools";
 
-// gemini-flash-latest always points at Google's current Flash model, which is on the free tier. Override with GEMINI_MODEL.
-export const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
 
 const FUNCTIONS = TOOL_SPECS.map((t) => ({ name: t.name, description: t.description, parametersJsonSchema: t.input_schema }));
 let ai: GoogleGenAI | null = null;

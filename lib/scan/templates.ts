@@ -33,6 +33,10 @@ export const TEMPLATES: Template[] = [
     anchors: [[0, 1], [0.15, 0.45], [0.3, 0.8], [0.45, 0.3], [0.6, 0.6], [0.75, 0.2], [0.88, 0.42], [1, 0.75]] },
   { id: "rising_wedge", name: "Rising wedge", thai: "ลิ่มขาขึ้น", bias: "bearish",
     anchors: [[0, 0], [0.15, 0.55], [0.3, 0.2], [0.45, 0.7], [0.6, 0.4], [0.75, 0.8], [0.88, 0.58], [1, 0.25]] },
+  { id: "ascending_channel", name: "Rising channel", thai: "ช่องขาขึ้น", bias: "bullish",
+    anchors: [[0, 0.1], [0.15, 0.4], [0.3, 0.2], [0.5, 0.65], [0.65, 0.45], [0.85, 0.9], [1, 0.7]] },
+  { id: "descending_channel", name: "Falling channel", thai: "ช่องขาลง", bias: "bearish",
+    anchors: [[0, 1], [0.15, 0.62], [0.3, 0.82], [0.5, 0.38], [0.65, 0.58], [0.85, 0.12], [1, 0.32]] },
 ];
 
 export const templateById = (id: string) => TEMPLATES.find((t) => t.id === id);

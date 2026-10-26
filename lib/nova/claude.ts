@@ -1,8 +1,8 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
+import { CLAUDE_MODEL } from "./config";
 import { contextLine, executeTool, MAX_ROUNDS, OUT_OF_ROUNDS, PERSONA, TOOL_SPECS, type RunOptions } from "./tools";
 
-export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
 const TOOLS: Anthropic.Tool[] = TOOL_SPECS;
 let client: Anthropic | null = null;
 

@@ -1,9 +1,6 @@
-import { ApiError } from "@google/genai";
 import { z } from "zod";
-import { N, normalize } from "@/lib/scan/match";
 import { runScan, type ScanEvent } from "@/lib/scan/run";
-import { shapeFromImage, ShapeError } from "@/lib/scan/shape";
-import { sampleAnchors, templateById } from "@/lib/scan/templates";
+import { templateById } from "@/lib/scan/templates";
 import { THEMES, UNIVERSES, type ThemeId, type UniverseId } from "@/lib/scan/universe";
 import { openTv, originOf, TvAuthError } from "@/lib/tradingview";
 
@@ -41,21 +38,11 @@ export async function POST(req: Request) {
     async start(controller) {
       const emit = (e: ScanEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       try {
-        let shape: number[];
-        if (template) {
-          shape = normalize(sampleAnchors(template.anchors, N));
-        } else {
-          emit({ type: "status", text: "Reading the pattern in your image" });
-          const s = await shapeFromImage((pattern as { image: Parameters<typeof shapeFromImage>[0] }).image, req.signal);
-          emit({ type: "shape", ...s });
-          shape = s.points;
-        }
-        await runScan({ tv: tv.call, universe, themes, length, shape, template, signal: req.signal }, emit);
+        const image = "image" in pattern ? pattern.image : undefined;
+        await runScan({ tv: tv.call, universe, themes, length, template, image, signal: req.signal }, emit);
       } catch (err) {
         let message = "The scan was interrupted. Try again.";
-        if (err instanceof ShapeError) message = err.message;
-        else if (err instanceof ApiError) message = err.status === 429 ? "Gemini free-tier limit reached while reading the image. Wait a minute and try again." : `Gemini couldn't read the image (error ${err.status}).`;
-        else if (err instanceof Error && err.message.includes("TradingView")) message = err.message;
+        if (err instanceof Error && /TradingView|AI /.test(err.message)) message = err.message;
         emit({ type: "error", message });
       } finally {
         emit({ type: "done" });
