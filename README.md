@@ -9,19 +9,26 @@ A web app for commanding an AI market analyst ("Nova") over your TradingView dat
 ## How it works
 
 ```
-Browser ──> /api/tv    ──> TradingView MCP server (read tools, confirmed writes)
-        └─> /api/nova  ──> Claude API (claude-opus-5-5) ── tool calls ──> TradingView MCP server
+Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, confirmed writes)
+                 └─> /api/nova  ──> Gemini or Claude ── tool calls ──> TradingView MCP server
 ```
 
 - `lib/tradingview.ts` connects to a remote TradingView MCP server over Streamable HTTP.
-- `lib/nova.ts` holds the persona prompt and the tool loop. Edit `PERSONA` to change how Nova talks.
+- `lib/nova/tools.ts` holds the persona prompt and the TradingView tools. Edit `PERSONA` to change how Nova talks.
+- `lib/nova/gemini.ts` runs Nova on Gemini (default, `gemini-2.5-flash`, free tier). `lib/nova/claude.ts` runs it on Claude (`claude-opus-5-5`). Pick with `AI_PROVIDER`. API keys stay on the server.
 - `middleware.ts` puts the whole app behind one password.
-- Refusal fallback is on (`fallbacks: "default"`), so a declined request is retried on a fallback model automatically.
+- On Claude, refusal fallback is on (`fallbacks: "default"`), so a declined request is retried on a fallback model automatically.
+
+### About the Gemini free tier
+
+- It has per-minute and per-day request limits. One Nova answer can use several requests (one per round of data lookups), so heavy use may hit the limit. The app shows a clear message when it does.
+- Google may use prompts sent on the free tier to improve its products. Don't type anything private into Nova while on the free tier.
 
 ## Setup
 
 1. Copy `.env.example` to `.env.local` and fill in:
-   - `ANTHROPIC_API_KEY` from https://console.anthropic.com. Usage is billed per token.
+   - `GEMINI_API_KEY` from https://aistudio.google.com/apikey (free).
+   - Optional: `AI_PROVIDER=claude` plus `ANTHROPIC_API_KEY` from https://console.anthropic.com to run Nova on Claude (billed per token).
    - `TRADINGVIEW_MCP_URL` and `TRADINGVIEW_MCP_TOKEN`: the URL of your TradingView MCP server and a token for it.
    - `APP_PASSWORD`: any password you choose.
 2. `npm install`
@@ -31,7 +38,7 @@ Browser ──> /api/tv    ──> TradingView MCP server (read tools, confirmed
 
 1. Push this folder to a GitHub repo.
 2. In Vercel, choose **Add New → Project**, import the repo and keep the Next.js defaults.
-3. Add the four environment variables under **Settings → Environment Variables**.
+3. Add the environment variables from `.env.example` under **Settings → Environment Variables**.
 4. Deploy. Nova's route allows up to 300 s per answer, which needs a Vercel plan that supports that duration.
 
 ## Commands

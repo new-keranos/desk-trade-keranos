@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { ApiError } from "@google/genai";
 import { z } from "zod";
 import { runNova, type NovaEvent } from "@/lib/nova";
 
@@ -26,7 +27,11 @@ export async function POST(req: Request) {
         await runNova({ history: messages, effort, watchlist, selected, emit, signal: req.signal });
       } catch (err) {
         let message = "Nova was interrupted. Send again to retry.";
-        if (err instanceof Anthropic.RateLimitError) message = "Rate limited by the Claude API. Wait a minute and try again.";
+        if (err instanceof ApiError) {
+          message = err.status === 429 ? "Gemini free-tier limit reached. Wait a minute, or try again tomorrow if the daily quota is used up."
+            : err.status === 400 || err.status === 403 ? "Gemini rejected the request. Check GEMINI_API_KEY and GEMINI_MODEL."
+            : `Gemini API error ${err.status}. Try again.`;
+        } else if (err instanceof Anthropic.RateLimitError) message = "Rate limited by the Claude API. Wait a minute and try again.";
         else if (err instanceof Anthropic.AuthenticationError) message = "The Anthropic API key is missing or invalid. Check ANTHROPIC_API_KEY.";
         else if (err instanceof Anthropic.APIUserAbortError) message = "Stopped.";
         else if (err instanceof Anthropic.APIError) message = `Claude API error ${err.status ?? ""}. Try again.`;

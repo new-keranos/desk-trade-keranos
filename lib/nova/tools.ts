@@ -1,9 +1,6 @@
 import "server-only";
-import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { callTv, TV } from "./tradingview";
-
-export const MODEL = "claude-opus-5-5";
+import { callTv, TV } from "../tradingview";
 
 export const PERSONA = `You are Nova, a calm, data-first market analyst working for Neal.
 You cover US stocks, the Thai SET (including mai) and crypto.
@@ -46,11 +43,15 @@ const clip = (v: unknown) => {
   return s.length > MAX_RESULT ? s.slice(0, MAX_RESULT) + "…(truncated)" : s;
 };
 
+/** Provider-neutral tool definition: JSON Schema input, zod validation, server-side runner. */
+export type ToolSpec = { name: string; description: string; input_schema: { type: "object"; properties: Record<string, unknown>; required?: string[] } };
+export type NovaContext = { watchlist: string[]; selected: string | null };
+
 type ToolDef = {
-  tool: Anthropic.Tool;
+  tool: ToolSpec;
   schema: z.ZodTypeAny;
   label: (i: any) => string;
-  run: (i: any, emit: (e: NovaEvent) => void, ctx: { watchlist: string[]; selected: string | null }) => Promise<unknown>;
+  run: (i: any, emit: (e: NovaEvent) => void, ctx: NovaContext) => Promise<unknown>;
 };
 
 const defs: ToolDef[] = [
@@ -169,72 +170,28 @@ const defs: ToolDef[] = [
   },
 ];
 
-const TOOLS: Anthropic.Tool[] = defs.map((d) => d.tool);
+
+export const TOOL_SPECS: ToolSpec[] = defs.map((d) => d.tool);
 const byName = new Map(defs.map((d) => [d.tool.name, d]));
 
-const anthropic = new Anthropic();
-const MAX_ROUNDS = 8;
-
-export async function runNova(opts: {
-  history: Anthropic.MessageParam[];
-  effort: "low" | "medium" | "high";
-  watchlist: string[];
-  selected: string | null;
-  emit: (e: NovaEvent) => void;
-  signal: AbortSignal;
-}): Promise<void> {
-  const { emit } = opts;
-  const messages: Anthropic.MessageParam[] = [...opts.history];
-  const context = `Today is ${new Date().toISOString().slice(0, 10)}. Selected symbol: ${opts.selected ?? "none"}. Watchlist: ${opts.watchlist.join(", ") || "empty"}.`;
-
-  for (let round = 0; round < MAX_ROUNDS; round++) {
-    // Server-side fallback on refusal; the SDK types may not list `fallbacks` yet.
-    const params = {
-      model: MODEL,
-      max_tokens: 16000,
-      system: [
-        { type: "text" as const, text: PERSONA, cache_control: { type: "ephemeral" as const } },
-        { type: "text" as const, text: context },
-      ],
-      tools: TOOLS,
-      messages,
-      output_config: { effort: opts.effort },
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-    };
-    const response = (await anthropic.beta.messages.create(params as any, { signal: opts.signal })) as unknown as Anthropic.Message;
-
-    for (const block of response.content) {
-      if (block.type === "text" && block.text.trim()) emit({ type: "text", text: block.text });
-    }
-    if (response.stop_reason === "refusal") {
-      emit({ type: "error", message: "Nova declined that request. Try rephrasing it." });
-      return;
-    }
-    if (response.stop_reason === "pause_turn") {
-      messages.push({ role: "assistant", content: response.content });
-      continue;
-    }
-    const uses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-    if (response.stop_reason !== "tool_use" || uses.length === 0) return;
-
-    messages.push({ role: "assistant", content: response.content });
-    const results = await Promise.all(
-      uses.map(async (u): Promise<Anthropic.ToolResultBlockParam> => {
-        const def = byName.get(u.name);
-        if (!def) return { type: "tool_result", tool_use_id: u.id, is_error: true, content: `Unknown tool ${u.name}` };
-        const parsed = def.schema.safeParse(u.input);
-        if (!parsed.success) return { type: "tool_result", tool_use_id: u.id, is_error: true, content: `Invalid input: ${parsed.error.message.slice(0, 500)}` };
-        emit({ type: "step", text: def.label(parsed.data) });
-        try {
-          const out = await def.run(parsed.data, emit, { watchlist: opts.watchlist, selected: opts.selected });
-          return { type: "tool_result", tool_use_id: u.id, content: clip(out) };
-        } catch (err) {
-          return { type: "tool_result", tool_use_id: u.id, is_error: true, content: (err as Error).message.slice(0, 500) };
-        }
-      }),
-    );
-    messages.push({ role: "user", content: results });
+/** Validate and run one tool call. Never throws: failures come back as { isError: true }. */
+export async function executeTool(name: string, input: unknown, emit: (e: NovaEvent) => void, ctx: NovaContext): Promise<{ isError: boolean; content: string }> {
+  const def = byName.get(name);
+  if (!def) return { isError: true, content: `Unknown tool ${name}` };
+  const parsed = def.schema.safeParse(input ?? {});
+  if (!parsed.success) return { isError: true, content: `Invalid input: ${parsed.error.message.slice(0, 500)}` };
+  emit({ type: "step", text: def.label(parsed.data) });
+  try {
+    return { isError: false, content: clip(await def.run(parsed.data, emit, ctx)) };
+  } catch (err) {
+    return { isError: true, content: (err as Error).message.slice(0, 500) };
   }
-  emit({ type: "text", text: "_Stopped after several data lookups. Ask a narrower question to continue._" });
 }
+
+export const MAX_ROUNDS = 8;
+export const contextLine = (ctx: NovaContext) =>
+  `Today is ${new Date().toISOString().slice(0, 10)}. Selected symbol: ${ctx.selected ?? "none"}. Watchlist: ${ctx.watchlist.join(", ") || "empty"}.`;
+export const OUT_OF_ROUNDS = "_Stopped after several data lookups. Ask a narrower question to continue._";
+
+export type ChatTurn = { role: "user" | "assistant"; content: string };
+export type RunOptions = { history: ChatTurn[]; effort: "low" | "medium" | "high"; emit: (e: NovaEvent) => void; signal: AbortSignal } & NovaContext;
