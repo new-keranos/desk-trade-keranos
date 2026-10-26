@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
 import Scanner, { type PatternHit } from "./scanner";
+import Candles, { type Ohlcv } from "./candles";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
 
 // ---------- helpers ----------
 type Quote = { description?: string; close?: number; change?: number; change_abs?: number; volume?: number | null;
   market_cap_basic?: number | null; price_earnings_ttm?: number | null; sector?: string | null; high?: number; low?: number };
-type Bars = { t: number[]; c: number[] };
+type Bars = Ohlcv;
 type Tech = { price?: number; summary?: { recommendation?: string; value?: number; ma?: string };
   oscillators?: Record<string, number>; moving_averages?: Record<string, number> };
 type Headline = { title: string; link?: string; storyPath?: string; published: number; provider?: { name?: string } };
@@ -234,10 +235,14 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
   const [news, setNews] = useState<Headline[] | null>(null);
   const [err, setErr] = useState<{ chart?: string; tech?: string; news?: string }>({});
   const [range, setRange] = useState(126);
-  const [mode, setMode] = useState<"tv" | "line">("tv");
-  // Zoom out far enough to show the whole pattern when one is opened from the scanner.
+  const [mode, setMode] = useState<"candles" | "tv" | "line">("tv");
+  // TradingView's free embedded chart can't show SET stocks, so those use our own candles.
+  const tvOk = !!symbol && market(symbol) !== "SET";
+  useEffect(() => { setMode(tvOk ? "tv" : "candles"); }, [symbol, tvOk]);
+  // A pattern from the scanner is drawn on our candles, zoomed to fit.
   useEffect(() => {
     if (!pattern) return;
+    setMode("candles");
     const r = rangeSince(pattern.from);
     setRange((RANGES.find((x) => x[2] === r) ?? RANGES[3])[1]);
   }, [pattern]);
@@ -247,7 +252,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
     let live = true;
     setBars(null); setTech(null); setNews(null); setErr({});
     const fail = (k: "chart" | "tech" | "news") => (e: Error) => live && setErr((x) => ({ ...x, [k]: e.message }));
-    tv<{ bars?: Bars }>("mcp-tv-get-ohlcv", { symbol, interval: "1D", count: 252, format: "columns" }).then((d) => live && setBars(d.bars ?? null)).catch(fail("chart"));
+    tv<{ bars?: Bars }>("mcp-tv-get-ohlcv", { symbol, interval: "1D", count: 500, format: "columns" }).then((d) => live && setBars(d.bars ?? null)).catch(fail("chart"));
     tv<{ data?: Tech }>("mcp-tv-get-technicals-rating", { symbol, interval: "1D" }).then((d) => live && setTech(d.data ?? null)).catch(fail("tech"));
     tv<{ data?: { headlines?: Headline[] } }>("mcp-tv-get-news", { symbol, limit: 6 }).then((d) => live && setNews(d.data?.headlines ?? [])).catch(fail("news"));
     return () => { live = false; };
@@ -264,7 +269,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
 
   return (
     <section className="stack" aria-label="Selected symbol">
-      {pattern && symbol && <PatternPane p={pattern} bars={bars} onClear={onClearPattern} onBack={onBackToScan} />}
+      {pattern && symbol && <PatternPane p={pattern} onClear={onClearPattern} onBack={onBackToScan} />}
       <div className="pane">
         <div className="focus-h">
           <div>
@@ -276,7 +281,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
           )}
         </div>
         <div className="chart-bar">
-          {mode === "line" ? (
+          {mode !== "tv" ? (
             <div className="ranges chips" role="group" aria-label="Chart range">
               {RANGES.map(([l, n]) => (
                 <button key={l} className="chip" aria-pressed={range === n} onClick={() => setRange(n)}>{l}</button>
@@ -284,14 +289,18 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
             </div>
           ) : <span className="muted" style={{ fontSize: 12 }}>Daily candles · use the chart&apos;s own range buttons</span>}
           <div className="chips" role="group" aria-label="Chart type">
-            <button className="chip" aria-pressed={mode === "tv"} onClick={() => setMode("tv")}>TradingView</button>
+            <button className="chip" aria-pressed={mode === "candles"} onClick={() => setMode("candles")}>Candles</button>
+            {tvOk && <button className="chip" aria-pressed={mode === "tv"} onClick={() => setMode("tv")}>TradingView</button>}
             <button className="chip" aria-pressed={mode === "line"} onClick={() => setMode("line")}>Line</button>
             {symbol && <a className="ext" href={tvChartUrl(symbol)} target="_blank" rel="noopener noreferrer" style={{ alignSelf: "center", marginLeft: 6 }}>Open in TradingView ↗</a>}
           </div>
         </div>
         <div className="chart-wrap">
           {mode === "tv" && symbol ? <TvChart symbol={symbol} range={pattern ? rangeSince(pattern.from) : undefined} />
-            : err.chart ? <div className="note warn">{err.chart}</div> : bars?.c?.length ? <Chart bars={bars} range={range} highlight={pattern} /> : <div className="note">Loading chart…</div>}
+            : err.chart ? <div className="note warn">{err.chart}</div>
+            : !bars?.c?.length ? <div className="note">Loading chart…</div>
+            : mode === "candles" ? <Candles bars={bars} visible={range} overlay={pattern} />
+            : <Chart bars={{ t: bars.t.slice(-252), c: bars.c.slice(-252) } as Bars} range={range} highlight={pattern} />}
         </div>
         <dl className="stats" style={{ margin: 0 }}>
           {stats.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
@@ -322,25 +331,21 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
 }
 
 /** The scanner match on the dashboard: where the pattern sits on the chart, and a button to have Nova check it. */
-function PatternPane({ p, bars, onClear, onBack }: { p: PatternHit; bars: Bars | null; onClear: () => void; onBack: () => void }) {
-  const n = bars ? Math.min(bars.c.length, Math.max(66, bars.c.length - bars.t.findIndex((x) => isoDay(x) >= p.from) + 15)) : 0;
+/** The scanner match on the dashboard, with a button to have Nova check it. The pattern is drawn on the candles below. */
+function PatternPane({ p, onClear, onBack }: { p: PatternHit; onClear: () => void; onBack: () => void }) {
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
     `analyze pattern ${p.symbol} ${p.label} ${p.from} ${p.to} (scanner: ${p.score}% match, ${p.bars} days, height ${p.heightPct}%)` }));
   return (
     <div className="pane pattern-pane">
       <div className="pane-h">
         <div><h2>{p.label} · <span className="num">{p.score}%</span> match</h2>
-          <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}%</div></div>
+          <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · dashed line on the chart below</div></div>
         <div className="row">
           <button className="btn primary" type="button" onClick={ask}>Analyze with Nova</button>
           <button className="btn" type="button" onClick={onBack}>Back to scan</button>
           <button className="btn" type="button" onClick={onClear} aria-label="Hide pattern">×</button>
         </div>
       </div>
-      <div className="chart-wrap">
-        {bars?.c?.length ? <Chart bars={bars} range={n} highlight={p} /> : <div className="note">Loading chart…</div>}
-      </div>
-      <p className="note" style={{ paddingTop: 0 }}>Shaded: where the scanner found the pattern. Dashed: the pattern shape. Use the TradingView chart below to check candles and volume.</p>
     </div>
   );
 }
