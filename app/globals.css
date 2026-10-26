@@ -219,3 +219,9 @@ body { padding-top: max(14px, env(safe-area-inset-top, 0px)); }
 .saved-meta { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .saved-x { border: 0; background: none; padding: 0 14px; font-size: 18px; color: var(--muted); }
 .saved-x:hover { color: var(--down); }
+.chart-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 0 18px; }
+.chart-bar .ranges { padding: 0; }
+.tv-chart { width: 100%; border-radius: 4px; overflow: hidden; }
+.pattern-pane { border-color: var(--accent-fill); }
+.pattern-pane .pane-h { flex-wrap: wrap; }
+.pattern-pane .row { display: flex; gap: 6px; flex-wrap: wrap; }

@@ -23,6 +23,7 @@ Rules:
 
 Commands: brief (watchlist summary: movers, ratings, news, earnings this week), analyze <ticker>, compare <a> <b>, scan <style> <market>, news <ticker>, earnings <period>, dividends <market>, macro <US|TH>, alert <ticker> <above|below> <price>, watch <add|remove> <ticker>,
 pattern <pattern> <SP500|NDX|SET50|SET100> [theme] (chart-pattern scan, e.g. pattern double bottom SET100 energy).
+analyze pattern <ticker> <pattern> <from> <to> (check a scanner match: call get_pattern_bars and get_technicals, then say whether the swing points really form that pattern, the neckline or breakout level, whether price has broken out and on what volume, the level that would invalidate it, and a measured-move level to watch).
 For pattern scans, call scan_chart_patterns. Present the best 3 to 5 matches with match %, the pattern's date span and height, and say a shape match is a starting point, not a confirmed setup.
 If a message is not a command, answer it as a question using the same rules.
 
@@ -158,6 +159,44 @@ const defs: ToolDef[] = [
       if (!t) throw new Error(`Unknown pattern. Use one of: ${TEMPLATES.map((x) => x.id).join(", ")}`);
       const r = await runScan({ tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", shape: normalize(sampleAnchors(t.anchors, N)), limit: 10 }, () => {});
       return { pattern: t.name, bias: t.bias, checked: r.checked, note: r.note, matches: r.rows.map(({ closes: _c, ...row }) => row) };
+    },
+  },
+  {
+    tool: { name: "get_pattern_bars", description: "Daily bars around a chart pattern for checking it: swing highs and lows with dates, pattern high/low, closes (sampled) with dates, volume during the pattern vs the last 10 days, and price action after the pattern. date_from/date_to are the pattern's start and end (YYYY-MM-DD).",
+      input_schema: { type: "object", properties: { symbol: { type: "string", description: SYMBOL_DESC }, date_from: { type: "string" }, date_to: { type: "string" } }, required: ["symbol", "date_from", "date_to"] } },
+    schema: z.object({ symbol: sym, date_from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), date_to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }),
+    label: (i) => `pattern bars ${i.symbol}`,
+    run: async (i, _e, ctx) => {
+      const lead = new Date(Date.parse(i.date_from) - 30 * 86400e3).toISOString().slice(0, 10);
+      const p = (await ctx.tv(TV.ohlcv, { symbol: i.symbol, interval: "1D", date_from: lead, count: 400, format: "columns" })) as any;
+      const b = p?.bars ?? {};
+      const t: number[] = b.t ?? [], h: number[] = b.h ?? [], l: number[] = b.l ?? [], c: number[] = b.c ?? [], v: number[] = b.v ?? [];
+      const day = (k: number) => new Date(t[k] * 1000).toISOString().slice(0, 10);
+      const s0 = t.findIndex((_x, k) => day(k) >= i.date_from);
+      let s1 = t.length - 1;
+      while (s1 > 0 && day(s1) > i.date_to) s1--;
+      if (s0 < 0 || s1 <= s0) throw new Error("No bars in that date range.");
+      // Swing points: highest high / lowest low within 5 bars either side.
+      const R = 5, swings: { date: string; type: "high" | "low"; price: number }[] = [];
+      for (let k = Math.max(s0, R); k <= Math.min(t.length - 1 - R, s1 + R); k++) {
+        const hs = h.slice(k - R, k + R + 1), ls = l.slice(k - R, k + R + 1);
+        if (h[k] === Math.max(...hs)) swings.push({ date: day(k), type: "high", price: h[k] });
+        else if (l[k] === Math.min(...ls)) swings.push({ date: day(k), type: "low", price: l[k] });
+      }
+      const win = { h: h.slice(s0, s1 + 1), l: l.slice(s0, s1 + 1), v: v.slice(s0, s1 + 1) };
+      const hi = Math.max(...win.h), lo = Math.min(...win.l);
+      const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+      const step = Math.max(1, Math.ceil((s1 - s0 + 1) / 50));
+      const sampled = [];
+      for (let k = s0; k <= s1; k += step) sampled.push([day(k), c[k]]);
+      return {
+        symbol: p?.symbol, pattern_from: day(s0), pattern_to: day(s1), bars: s1 - s0 + 1,
+        pattern_high: { price: hi, date: day(s0 + win.h.indexOf(hi)) }, pattern_low: { price: lo, date: day(s0 + win.l.indexOf(lo)) },
+        swings: swings.slice(0, 24), closes_sampled: sampled,
+        avg_volume_pattern: Math.round(avg(win.v)), avg_volume_last10: Math.round(avg(v.slice(-10))),
+        after_pattern: { bars: t.length - 1 - s1, closes: c.slice(s1 + 1).slice(-20), high: Math.max(...h.slice(s1 + 1), -Infinity), low: Math.min(...l.slice(s1 + 1), Infinity) },
+        last: { date: day(t.length - 1), close: c[c.length - 1] },
+      };
     },
   },
   {

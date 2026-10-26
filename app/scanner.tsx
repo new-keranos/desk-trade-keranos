@@ -9,6 +9,8 @@ type Row = { symbol: string; name: string; description?: string; sector?: string
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[] };
 type Img = { mime: "image/jpeg"; data: string; preview: string };
 type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string };
+/** A scanner match opened on the dashboard. */
+export type PatternHit = Row & { label: string; shape: number[] };
 type Saved = Result & { id: string; at: string; universe: string; themes: string[]; length: string };
 
 const UNIVERSES: [string, string][] = [["SP500", "S&P 500"], ["NDX", "Nasdaq 100"], ["SET50", "SET50"], ["SET100", "SET100"]];
@@ -55,7 +57,7 @@ async function readImage(file: File): Promise<Img> {
   return { mime: "image/jpeg", data: url.slice(url.indexOf(",") + 1), preview: url };
 }
 
-export default function Scanner({ onOpen, hidden }: { onOpen: (symbol: string) => void; hidden?: boolean }) {
+export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) => void; hidden?: boolean }) {
   const [pattern, setPattern] = useState<string>("double_bottom");
   const [img, setImg] = useState<Img | null>(null);
   const [universe, setUniverse] = useState("SET100");
@@ -218,7 +220,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (symbol: string) =
           <ul className="hits">
             {result.rows.map((r) => (
               <li key={r.symbol}>
-                <button type="button" onClick={() => onOpen(r.symbol)} aria-label={`Open ${r.symbol}, ${r.score}% match`}>
+                <button type="button" onClick={() => onOpen({ ...r, label: result.label, shape: result.shape })} aria-label={`Open ${r.symbol}, ${r.score}% match`}>
                   <span className="hit-t"><b>{r.name}</b><span className="mkt">{market(r.symbol)}</span><span className="hit-d">{r.description}</span></span>
                   <span className="hit-score num">{r.score}%</span>
                   <MatchChart closes={r.closes} shape={result.shape} />

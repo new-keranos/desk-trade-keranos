@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
-import Scanner from "./scanner";
+import Scanner, { type PatternHit } from "./scanner";
+import TvChart, { rangeSince, type TvRange } from "./tvchart";
 
 // ---------- helpers ----------
 type Quote = { description?: string; close?: number; change?: number; change_abs?: number; volume?: number | null;
@@ -69,6 +70,7 @@ export default function Desk() {
   const [selected, setSelected] = useState<string | null>(null);
   const [connect, setConnect] = useState<string | null>(null);
   const [view, setView] = useState<"desk" | "scanner">("desk");
+  const [pattern, setPattern] = useState<PatternHit | null>(null);
 
   useEffect(() => {
     const err = new URLSearchParams(location.search).get("tv_error");
@@ -129,12 +131,13 @@ export default function Desk() {
       )}
       <main className="desk">
         {/* The scanner stays mounted so a finished scan is still there after visiting the desk. */}
-        <Scanner hidden={view !== "scanner"} onOpen={(s) => { setSelected(s); setView("desk"); }} />
+        <Scanner hidden={view !== "scanner"} onOpen={(hit) => { setSelected(hit.symbol); setPattern(hit); setView("desk"); window.scrollTo({ top: 0 }); }} />
         {view === "desk" && (
           <>
             <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={selected} onSelect={setSelected}
               error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) setSelected(s); loadWatchlist(); }} />
-            <Focus symbol={selected} quote={selected ? quotes[selected] : undefined} />
+            <Focus symbol={selected} quote={selected ? quotes[selected] : undefined}
+              pattern={pattern?.symbol === selected ? pattern : null} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")} />
           </>
         )}
         <section className="stack console-col" aria-label="Nova console">
@@ -208,12 +211,22 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
 }
 
 // ---------- focus ----------
-function Focus({ symbol, quote }: { symbol: string | null; quote?: Quote }) {
+const RANGES: [string, number, TvRange][] = [["1M", 22, "1M"], ["3M", 66, "3M"], ["6M", 126, "6M"], ["1Y", 252, "12M"]];
+
+function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbol: string | null; quote?: Quote;
+  pattern: PatternHit | null; onClearPattern: () => void; onBackToScan: () => void }) {
   const [bars, setBars] = useState<Bars | null>(null);
   const [tech, setTech] = useState<Tech | null>(null);
   const [news, setNews] = useState<Headline[] | null>(null);
   const [err, setErr] = useState<{ chart?: string; tech?: string; news?: string }>({});
   const [range, setRange] = useState(126);
+  const [mode, setMode] = useState<"tv" | "line">("tv");
+  // Zoom out far enough to show the whole pattern when one is opened from the scanner.
+  useEffect(() => {
+    if (!pattern) return;
+    const r = rangeSince(pattern.from);
+    setRange((RANGES.find((x) => x[2] === r) ?? RANGES[3])[1]);
+  }, [pattern]);
 
   useEffect(() => {
     if (!symbol) return;
@@ -237,6 +250,7 @@ function Focus({ symbol, quote }: { symbol: string | null; quote?: Quote }) {
 
   return (
     <section className="stack" aria-label="Selected symbol">
+      {pattern && symbol && <PatternPane p={pattern} bars={bars} onClear={onClearPattern} onBack={onBackToScan} />}
       <div className="pane">
         <div className="focus-h">
           <div>
@@ -247,13 +261,20 @@ function Focus({ symbol, quote }: { symbol: string | null; quote?: Quote }) {
             <div className="px">{fmtPx(q.close)}<small className={cls(q.change)}>{q.change_abs != null ? `${q.change_abs > 0 ? "+" : ""}${fmtPx(q.change_abs)} ` : ""}{fmtPct(q.change)}</small></div>
           )}
         </div>
-        <div className="ranges chips" role="group" aria-label="Chart range">
-          {([["1M", 22], ["3M", 66], ["6M", 126], ["1Y", 252]] as const).map(([l, n]) => (
-            <button key={l} className="chip" aria-pressed={range === n} onClick={() => setRange(n)}>{l}</button>
-          ))}
+        <div className="chart-bar">
+          <div className="ranges chips" role="group" aria-label="Chart range">
+            {RANGES.map(([l, n]) => (
+              <button key={l} className="chip" aria-pressed={range === n} onClick={() => setRange(n)}>{l}</button>
+            ))}
+          </div>
+          <div className="chips" role="group" aria-label="Chart type">
+            <button className="chip" aria-pressed={mode === "tv"} onClick={() => setMode("tv")}>TradingView</button>
+            <button className="chip" aria-pressed={mode === "line"} onClick={() => setMode("line")}>Line</button>
+          </div>
         </div>
         <div className="chart-wrap">
-          {err.chart ? <div className="note warn">{err.chart}</div> : bars?.c?.length ? <Chart bars={bars} range={range} /> : <div className="note">Loading chart…</div>}
+          {mode === "tv" && symbol ? <TvChart symbol={symbol} range={(RANGES.find((x) => x[1] === range) ?? RANGES[2])[2]} />
+            : err.chart ? <div className="note warn">{err.chart}</div> : bars?.c?.length ? <Chart bars={bars} range={range} highlight={pattern} /> : <div className="note">Loading chart…</div>}
         </div>
         <dl className="stats" style={{ margin: 0 }}>
           {stats.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
@@ -281,7 +302,33 @@ function Focus({ symbol, quote }: { symbol: string | null; quote?: Quote }) {
   );
 }
 
-function Chart({ bars, range }: { bars: Bars; range: number }) {
+/** The scanner match on the dashboard: where the pattern sits on the chart, and a button to have Nova check it. */
+function PatternPane({ p, bars, onClear, onBack }: { p: PatternHit; bars: Bars | null; onClear: () => void; onBack: () => void }) {
+  const n = bars ? Math.min(bars.c.length, Math.max(66, bars.c.length - bars.t.findIndex((x) => isoDay(x) >= p.from) + 15)) : 0;
+  const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
+    `analyze pattern ${p.symbol} ${p.label} ${p.from} ${p.to} (scanner: ${p.score}% match, ${p.bars} days, height ${p.heightPct}%)` }));
+  return (
+    <div className="pane pattern-pane">
+      <div className="pane-h">
+        <div><h2>{p.label} · <span className="num">{p.score}%</span> match</h2>
+          <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}%</div></div>
+        <div className="row">
+          <button className="btn primary" type="button" onClick={ask}>Analyze with Nova</button>
+          <button className="btn" type="button" onClick={onBack}>Back to scan</button>
+          <button className="btn" type="button" onClick={onClear} aria-label="Hide pattern">×</button>
+        </div>
+      </div>
+      <div className="chart-wrap">
+        {bars?.c?.length ? <Chart bars={bars} range={n} highlight={p} /> : <div className="note">Loading chart…</div>}
+      </div>
+      <p className="note" style={{ paddingTop: 0 }}>Shaded: where the scanner found the pattern. Dashed: the pattern shape. Use the TradingView chart below to check candles and volume.</p>
+    </div>
+  );
+}
+
+const isoDay = (unix: number) => new Date(unix * 1000).toISOString().slice(0, 10);
+
+function Chart({ bars, range, highlight }: { bars: Bars; range: number; highlight?: PatternHit | null }) {
   const n = Math.min(range, bars.c.length);
   const c = bars.c.slice(-n), t = bars.t.slice(-n);
   const W = 640, H = 230, L = 8, R = 62, T = 12, B = 24;
@@ -301,6 +348,17 @@ function Chart({ bars, range }: { bars: Bars; range: number }) {
         const v = lo + (k / 4) * (hi - lo), yy = y(v);
         return <g key={k}><line x1={L} x2={W - R} y1={yy} y2={yy} stroke="var(--line)" /><text x={W - R + 6} y={yy + 4} fontSize="11" fill="var(--muted)" fontFamily="IBM Plex Mono, monospace">{fmtPx(v)}</text></g>;
       })}
+      {(() => {
+        if (!highlight) return null;
+        const i0 = t.findIndex((v) => isoDay(v) >= highlight.from);
+        let i1 = t.length - 1;
+        while (i1 > 0 && isoDay(t[i1]) > highlight.to) i1--;
+        if (i0 < 0 || i1 <= i0) return null;
+        const seg = c.slice(i0, i1 + 1), sl = Math.min(...seg), sh = Math.max(...seg);
+        const sp = highlight.shape.map((v, k) => `${(x(i0) + (k / (highlight.shape.length - 1)) * (x(i1) - x(i0))).toFixed(1)},${y(sl + v * (sh - sl)).toFixed(1)}`).join(" ");
+        return <g><rect x={x(i0)} y={T} width={x(i1) - x(i0)} height={H - T - B} fill="var(--accent-soft)" opacity=".85" />
+          <polyline points={sp} fill="none" stroke="var(--accent-fill)" strokeWidth="2" strokeDasharray="5 4" /></g>;
+      })()}
       <polygon points={`${x(0)},${H - B} ${pts} ${x(n - 1)},${H - B}`} fill="url(#fill)" />
       <polyline points={pts} fill="none" stroke={col} strokeWidth="1.8" strokeLinejoin="round" />
       <circle cx={x(n - 1)} cy={y(c[n - 1])} r="3.5" fill={col} />
@@ -380,6 +438,13 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
   useEffect(() => { logEl.current?.scrollTo({ top: logEl.current.scrollHeight }); }, [log]);
 
   const patch = (id: number, f: (i: LogItem) => LogItem) => setLog((l) => l.map((i) => (i.id === id ? f(i) : i)));
+  // Other panels (the pattern pane) can send Nova a command.
+  const askRef = useRef<(t: string) => void>(() => {});
+  useEffect(() => {
+    const on = (e: Event) => { askRef.current((e as CustomEvent<string>).detail); document.querySelector(".console")?.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
+    window.addEventListener("nova:ask", on);
+    return () => window.removeEventListener("nova:ask", on);
+  }, []);
 
   async function ask(text: string) {
     text = text.trim();
@@ -429,6 +494,8 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
       setBusy(false);
     }
   }
+
+  askRef.current = ask;
 
   async function confirm(item: Extract<LogItem, { kind: "confirm" }>) {
     patch(item.id, (i) => ({ ...i, status: "working" }) as LogItem);

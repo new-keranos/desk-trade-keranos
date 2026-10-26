@@ -4,7 +4,7 @@ A web app for commanding an AI market analyst ("Nova") over your TradingView dat
 
 - **Dashboard:** your TradingView watchlist with live quotes, a market pulse strip (S&P 500, Nasdaq 100, SET, BTC, total crypto cap), a daily chart, technical rating, news and active alerts.
 - **Nova console:** type commands such as `brief`, `analyze SET:PTT`, `scan dividend SET`, `macro TH` or `alert BTC below 75000`. Nova calls TradingView tools for every number.
-- **Pattern scanner:** pick a chart pattern (double bottom, cup and handle, head and shoulders, triangles, flags, wedges and more) or upload a picture of the shape you want. Choose S&P 500, Nasdaq 100, SET50 or SET100, and narrow by theme (Tech, Medical, Finance, Energy, Fintech). It ranks stocks whose recent daily chart matches the shape.
+- **Pattern scanner:** pick a chart pattern (double bottom, cup and handle, head and shoulders, triangles, flags, wedges and more) or upload a picture of the shape you want. Choose S&P 500, Nasdaq 100, SET50 or SET100, and narrow by theme (Tech, Medical, Finance, Energy, Fintech). It ranks stocks whose recent daily chart matches the shape. Open a match to see the pattern shaded on the stock's chart next to TradingView's interactive chart, then press **Analyze with Nova** to have Nova check the swing points, breakout level, volume and invalidation level.
 - **Safe by design:** Nova can only *propose* alerts and watchlist changes. Nothing changes in TradingView until you press Confirm. There is no trading.
 
 ## How it works
@@ -59,5 +59,6 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
 | alert | `alert TSLA below 200` |
 | watch | `watch add SET:KBANK` |
 | pattern | `pattern double bottom SET100 energy` |
+| analyze pattern | `analyze pattern SET:PTTGC cup_handle 2026-05-03 2026-10-26` |
 
 Not financial advice.
