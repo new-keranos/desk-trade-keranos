@@ -339,7 +339,8 @@ function PatternPane({ p, onClear, onBack }: { p: PatternHit; onClear: () => voi
     <div className="pane pattern-pane">
       <div className="pane-h">
         <div><h2>{p.label} · <span className="num">{p.score}%</span> match</h2>
-          <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · dashed line on the chart below</div></div>
+          <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · dashed line on the chart below</div>
+          {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {c}</span>)}</div>}</div>
         <div className="row">
           <button className="btn primary" type="button" onClick={ask}>Analyze with Nova</button>
           <button className="btn" type="button" onClick={onBack}>Back to scan</button>

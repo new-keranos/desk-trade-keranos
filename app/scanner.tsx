@@ -6,7 +6,8 @@ import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 
 type Row = { symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
-  score: number; bars: number; from: string; to: string; heightPct: number; closes: number[] };
+  score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
+  checks?: string[]; points?: { k: number; date: string; price: number }[] };
 type Img = { mime: "image/jpeg"; data: string; preview: string };
 type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string };
 /** A scanner match opened on the dashboard. */
@@ -223,11 +224,12 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
                 <button type="button" onClick={() => onOpen({ ...r, label: result.label, shape: result.shape })} aria-label={`Open ${r.symbol}, ${r.score}% match`}>
                   <span className="hit-t"><b>{r.name}</b><span className="mkt">{market(r.symbol)}</span><span className="hit-d">{r.description}</span></span>
                   <span className="hit-score num">{r.score}%</span>
-                  <MatchChart closes={r.closes} shape={result.shape} />
+                  <MatchChart closes={r.closes} shape={result.shape} points={r.points} bars={r.bars} />
                   <span className="hit-meta">
                     <span className="num">{fmtPx(r.close)} <span className={cls(r.change)}>{fmtPct(r.change)}</span></span>
                     <span>{r.bars} days · {fmtDay(r.from)} – {fmtDay(r.to)} · height {r.heightPct}%</span>
                     {r.sector && <span className="muted">{r.sector}</span>}
+                    {!!r.checks?.length && <span className="hit-checks">{r.checks.map((c) => <span key={c}>✓ {c}</span>)}</span>}
                   </span>
                 </button>
               </li>
@@ -265,14 +267,17 @@ function Spark({ points, bias }: { points: number[]; bias: Bias }) {
   return <svg className="spark" viewBox={`0 0 ${W} ${H}`} aria-hidden="true"><polyline points={pts} fill="none" stroke={col} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" /></svg>;
 }
 
-/** The matched price window with the pattern drawn over it, dashed. */
-function MatchChart({ closes, shape }: { closes: number[]; shape: number[] }) {
+/** The matched price window with the pattern drawn over it, dashed: through the real turning points when known. */
+function MatchChart({ closes, shape, points, bars }: { closes: number[]; shape: number[]; points?: Row["points"]; bars: number }) {
   const W = 220, H = 64, P = 4;
   const lo = Math.min(...closes), hi = Math.max(...closes), d = hi - lo || 1;
   const line = (ys: number[]) => ys.map((y, i) => `${(P + (i / (ys.length - 1)) * (W - 2 * P)).toFixed(1)},${(P + (1 - y) * (H - 2 * P)).toFixed(1)}`).join(" ");
   return (
     <svg className="hit-chart" viewBox={`0 0 ${W} ${H}`} aria-hidden="true">
-      <polyline points={line(shape)} fill="none" stroke="var(--accent-fill)" strokeWidth="1.5" strokeDasharray="4 3" opacity=".9" />
+      {points?.length ? (
+        <polyline points={points.map((p) => `${(P + (p.k / Math.max(1, bars - 1)) * (W - 2 * P)).toFixed(1)},${(P + (1 - (p.price - lo) / d) * (H - 2 * P)).toFixed(1)}`).join(" ")}
+          fill="none" stroke="var(--accent-fill)" strokeWidth="1.5" strokeDasharray="4 3" opacity=".9" />
+      ) : <polyline points={line(shape)} fill="none" stroke="var(--accent-fill)" strokeWidth="1.5" strokeDasharray="4 3" opacity=".9" />}
       <polyline points={line(closes.map((c) => (c - lo) / d))} fill="none" stroke="var(--ink)" strokeWidth="1.6" strokeLinejoin="round" />
     </svg>
   );

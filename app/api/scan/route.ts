@@ -50,7 +50,7 @@ export async function POST(req: Request) {
           emit({ type: "shape", ...s });
           shape = s.points;
         }
-        await runScan({ tv: tv.call, universe, themes, length, shape, signal: req.signal }, emit);
+        await runScan({ tv: tv.call, universe, themes, length, shape, template, signal: req.signal }, emit);
       } catch (err) {
         let message = "The scan was interrupted. Try again.";
         if (err instanceof ShapeError) message = err.message;

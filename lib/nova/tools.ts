@@ -149,7 +149,7 @@ const defs: ToolDef[] = [
     run: async (i, _e, ctx) => (((await ctx.tv(TV.search, i)) as any)?.data?.symbols ?? []).slice(0, 6),
   },
   {
-    tool: { name: "scan_chart_patterns", description: `Scan a market for stocks whose recent daily chart matches a chart pattern. pattern: ${TEMPLATES.map((t) => t.id).join(", ")}. universe: ${Object.keys(UNIVERSES).join(", ")}. themes (optional, any of): ${Object.keys(THEMES).join(", ")}. length: short (1-3 months), medium (3-6 months, default), long (6-12 months). Returns the best matches with match % (60-100), date span and pattern height %.`,
+    tool: { name: "scan_chart_patterns", description: `Scan a market for stocks whose recent daily chart matches a chart pattern. pattern: ${TEMPLATES.map((t) => t.id).join(", ")}. universe: ${Object.keys(UNIVERSES).join(", ")}. themes (optional, any of): ${Object.keys(THEMES).join(", ")}. length: short (1-3 months), medium (3-6 months, default), long (6-12 months). Matches must pass the pattern's price rules (e.g. equal lows, rim levels). Returns the best matches with match % (60-100), date span, pattern height % and the rules each passed.`,
       input_schema: { type: "object", properties: { pattern: { type: "string" }, universe: { type: "string" }, themes: { type: "array", items: { type: "string" } }, length: { type: "string" } }, required: ["pattern", "universe"] } },
     schema: z.object({ pattern: z.string().max(40), universe: z.enum(Object.keys(UNIVERSES) as [keyof typeof UNIVERSES]),
       themes: z.array(z.enum(Object.keys(THEMES) as [string])).max(5).optional(), length: z.enum(["short", "medium", "long"]).optional() }),
@@ -157,8 +157,8 @@ const defs: ToolDef[] = [
     run: async (i, _e, ctx) => {
       const t = templateById(i.pattern);
       if (!t) throw new Error(`Unknown pattern. Use one of: ${TEMPLATES.map((x) => x.id).join(", ")}`);
-      const r = await runScan({ tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", shape: normalize(sampleAnchors(t.anchors, N)), limit: 10 }, () => {});
-      return { pattern: t.name, bias: t.bias, checked: r.checked, note: r.note, matches: r.rows.map(({ closes: _c, ...row }) => row) };
+      const r = await runScan({ tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", shape: normalize(sampleAnchors(t.anchors, N)), template: t, limit: 10 }, () => {});
+      return { pattern: t.name, bias: t.bias, checked: r.checked, note: r.note, matches: r.rows.map(({ closes: _c, points: _p, ...row }) => row) };
     },
   },
   {

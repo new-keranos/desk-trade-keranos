@@ -255,3 +255,4 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .saved-meta { display: block; font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .saved-x { border: 0; background: none; padding: 0 12px; font-size: 18px; color: var(--faint); border-radius: var(--r-sm); }
 .saved-x:hover { color: var(--down); }
+.hit-checks { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11px; color: var(--up); margin-top: 2px; }

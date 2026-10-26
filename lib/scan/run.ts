@@ -1,6 +1,7 @@
 import "server-only";
 import { TV, type TvCaller } from "../tradingview";
 import { bestMatch, resample, type Length } from "./match";
+import type { Template } from "./templates";
 import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "./universe";
 
 /** TradingView allows about 100 tool calls a minute, so one scan checks at most this many stocks (largest first). */
@@ -12,6 +13,8 @@ const MIN_SCORE = 0.6;
 export type ScanRow = {
   symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
+  /** Rules the match passed, and the real turning points (k = bar offset inside the window). */
+  checks: string[]; points: { k: number; date: string; price: number }[];
 };
 export type ScanEvent =
   | { type: "status"; text: string; done?: number; total?: number }
@@ -20,7 +23,7 @@ export type ScanEvent =
   | { type: "error"; message: string }
   | { type: "done" };
 
-export type ScanOptions = { tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; shape: number[]; limit?: number; signal?: AbortSignal };
+export type ScanOptions = { tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; shape: number[]; template?: Template; limit?: number; signal?: AbortSignal };
 
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 
@@ -45,12 +48,13 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
       try {
         const p = (await o.tv(TV.ohlcv, { symbol: s.symbol, interval: "1D", count: BARS, format: "columns" })) as { bars?: { t: number[]; c: number[] } };
         const c = p?.bars?.c ?? [], t = p?.bars?.t ?? [];
-        const m = c.length >= 30 ? bestMatch(c, o.shape, o.length) : null;
+        const m = c.length >= 30 ? bestMatch(c, o.shape, o.length, o.template) : null;
         if (m && m.score >= MIN_SCORE) {
           const win = c.slice(m.start, m.end);
           rows.push({ symbol: s.symbol, name: s.name, description: s.description, sector: s.sector, close: s.close, change: s.change,
             score: Math.round(m.score * 100), bars: m.end - m.start, from: day(t[m.start]), to: day(t[m.end - 1]),
-            heightPct: Math.round(m.heightPct * 10) / 10, closes: win.length > 96 ? resample(win, 96) : win });
+            heightPct: Math.round(m.heightPct * 10) / 10, closes: win.length > 96 ? resample(win, 96) : win,
+            checks: m.checks, points: m.points.map((p) => ({ k: p.k, date: day(t[m.start + p.k]), price: p.price })) });
         }
       } catch {
         skipped++;

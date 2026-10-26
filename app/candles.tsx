@@ -8,7 +8,7 @@ import { createChart, CrosshairMode, LineStyle, type IChartApi, type UTCTimestam
 // including SET, which TradingView's free embedded widget doesn't show.
 
 export type Ohlcv = { t: number[]; o: number[]; h: number[]; l: number[]; c: number[]; v?: number[] };
-export type Overlay = { from: string; to: string; shape: number[]; label: string };
+export type Overlay = { from: string; to: string; shape: number[]; label: string; points?: { date: string; price: number }[] };
 
 const isoDay = (unix: number) => new Date(unix * 1000).toISOString().slice(0, 10);
 const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -58,11 +58,16 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
         const lo = Math.min(...bars.l.slice(i0, i1 + 1)), hi = Math.max(...bars.h.slice(i0, i1 + 1));
         const s = overlay.shape, m = s.length - 1;
         const line = chart.addLineSeries({ color: cssVar("--accent") || "#8ab4f8", lineWidth: 2, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-        line.setData(Array.from({ length: i1 - i0 + 1 }, (_, j) => {
-          const x = (j / (i1 - i0)) * m, a = Math.floor(x), f = x - a;
-          const y = a + 1 <= m ? s[a] * (1 - f) + s[a + 1] * f : s[m];
-          return { time: time(i0 + j), value: lo + y * (hi - lo) };
-        }));
+        // Template patterns come with their real turning points: draw through those so the line sits on the price.
+        const byDay = new Map(bars.t.map((x, k) => [isoDay(x), k]));
+        const fitted = (overlay.points ?? []).map((p) => ({ k: byDay.get(p.date), price: p.price })).filter((p): p is { k: number; price: number } => p.k != null);
+        const uniq = fitted.filter((p, j) => j === 0 || p.k > fitted[j - 1].k);
+        line.setData(uniq.length >= 2 ? uniq.map((p) => ({ time: time(p.k), value: p.price }))
+          : Array.from({ length: i1 - i0 + 1 }, (_, j) => {
+            const x = (j / (i1 - i0)) * m, a = Math.floor(x), f = x - a;
+            const y = a + 1 <= m ? s[a] * (1 - f) + s[a + 1] * f : s[m];
+            return { time: time(i0 + j), value: lo + y * (hi - lo) };
+          }));
         candles.setMarkers([
           { time: time(i0), position: "belowBar", color: cssVar("--accent") || "#8ab4f8", shape: "arrowUp", text: overlay.label },
           { time: time(i1), position: "aboveBar", color: cssVar("--accent") || "#8ab4f8", shape: "arrowDown", text: "end" },

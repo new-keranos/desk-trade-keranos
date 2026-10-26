@@ -2,6 +2,9 @@
 // A price window is squeezed to N points, scaled to 0..1, and compared with the pattern shape by
 // correlation (overall form) and banded dynamic time warping (lets swings land a few points early or late).
 
+import { checkPattern, type KeyPoint } from "./rules";
+import type { Template } from "./templates";
+
 export const N = 48;
 
 export type Length = "short" | "medium" | "long";
@@ -82,10 +85,11 @@ export function similarity(window: number[], shape: number[]): number {
   return 0.5 * Math.max(0, r) + 0.5 * Math.max(0, 1 - 2 * gap);
 }
 
-export type Match = { score: number; start: number; end: number; heightPct: number };
+export type Match = { score: number; start: number; end: number; heightPct: number; checks: string[]; points: KeyPoint[] };
 
-/** Best match of a normalized N-point shape anywhere near the end of a close series. */
-export function bestMatch(closes: number[], shape: number[], length: Length): Match | null {
+/** Best match of a normalized N-point shape anywhere near the end of a close series.
+ *  With a template, a window must also pass that pattern's price-level rules. */
+export function bestMatch(closes: number[], shape: number[], length: Length, template?: Template): Match | null {
   let best: Match | null = null;
   for (const w of WINDOWS[length]) {
     for (const off of END_OFFSETS) {
@@ -97,7 +101,9 @@ export function bestMatch(closes: number[], shape: number[], length: Length): Ma
       if (heightPct < MIN_HEIGHT_PCT) continue;
       // Slight preference for patterns that end on the latest bar.
       const score = similarity(normalize(resample(win, N)), shape) - off * 0.004;
-      if (!best || score > best.score) best = { score, start, end, heightPct };
+      if (best && score <= best.score) continue;
+      const v = checkPattern(win, template);
+      if (v.ok) best = { score, start, end, heightPct, checks: v.checks, points: v.points };
     }
   }
   return best;
