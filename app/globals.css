@@ -1,5 +1,5 @@
 /* Layout: an app shell in the style of Google AI Studio.
-   Left rail (navigation, watchlist, alerts) | main view (desk or scanner) | Nova panel on the right.
+   Left rail (navigation, watchlist, alerts) | main view (desk or scanner) | Agent panel on the right.
    On desktop each column scrolls on its own; on narrow screens the columns stack and the page scrolls. */
 :root, :root[data-theme="dark"] {
   --bg: #131314;
@@ -186,7 +186,7 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .pattern-pane .pane-h { flex-wrap: wrap; }
 .pattern-pane .row { display: flex; gap: 6px; flex-wrap: wrap; }
 
-/* ---------- Nova (right panel) ---------- */
+/* ---------- Agent (right panel) ---------- */
 .console { display: flex; flex-direction: column; flex: 1; min-height: 0; background: none; border: 0; border-radius: 0; }
 .persona { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .mark { width: 34px; height: 34px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--glow); color: #fff; font-weight: 700; font-size: 15px; }

@@ -38,7 +38,7 @@ export async function POST(req: Request) {
       try {
         await runNova({ history: messages, effort, ai, watchlist, selected, tv: tv.call, emit, signal: req.signal });
       } catch (err) {
-        let message = "Nova was interrupted. Send again to retry.";
+        let message = "Agent was interrupted. Send again to retry.";
         if (err instanceof ApiError) {
           message = err.status === 429 ? "Gemini free-tier limit reached. Wait a minute, or try again tomorrow if the daily quota is used up."
             : err.status === 400 || err.status === 403 ? "Gemini rejected the request. Check GEMINI_API_KEY and GEMINI_MODEL."

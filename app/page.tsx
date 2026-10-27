@@ -40,7 +40,7 @@ async function tv<T = any>(tool: string, input: Record<string, unknown> = {}): P
   return j.data as T;
 }
 
-// Minimal, escaped Markdown for Nova's replies.
+// Minimal, escaped Markdown for Agent's replies.
 function md(text: string) {
   const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
   const inline = (s: string) => s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/(^|[^*])[*_]([^*_]+)[*_]/g, "$1<i>$2</i>");
@@ -121,7 +121,7 @@ export default function Desk() {
         <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={view === "desk" ? selected : null} onSelect={open}
           error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) open(s); loadWatchlist(); }} />
         <Alerts />
-        <p className="foot">Data from TradingView, delayed or realtime per your plan. Nova&apos;s answers are research, not financial advice.</p>
+        <p className="foot">Data from TradingView, delayed or realtime per your plan. Agent&apos;s answers are research, not financial advice.</p>
       </aside>
 
       <main className="main">
@@ -155,7 +155,7 @@ export default function Desk() {
         </div>
       </main>
 
-      <aside className="right" aria-label="Nova console">
+      <aside className="right" aria-label="Agent console">
         <Console symbols={symbols} selected={selected} watchlistId={watchlistId} onWatchlistChanged={loadWatchlist} />
       </aside>
     </div>
@@ -331,7 +331,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
   );
 }
 
-/** The scanner match on the dashboard, with a button to have Nova check it. The AI's marks are drawn on the candles below. */
+/** The scanner match on the dashboard, with a button to have Agent check it. The AI's marks are drawn on the candles below. */
 function PatternPane({ p, onClear, onBack }: { p: PatternHit; onClear: () => void; onBack: () => void }) {
   const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
@@ -347,7 +347,7 @@ function PatternPane({ p, onClear, onBack }: { p: PatternHit; onClear: () => voi
             {p.breakout != null && <span>Breakout level <b>{fmtPx(p.breakout)}</b></span>}
             {p.invalidation != null && <span className="muted">Invalid past {fmtPx(p.invalidation)}</span>}</div>}</div>
         <div className="row">
-          <button className="btn primary" type="button" onClick={ask}>Analyze with Nova</button>
+          <button className="btn primary" type="button" onClick={ask}>Analyze with Agent</button>
           <button className="btn" type="button" onClick={onBack}>Back to scan</button>
           <button className="btn" type="button" onClick={onClear} aria-label="Hide pattern">×</button>
         </div>
@@ -443,7 +443,7 @@ function Alerts() {
       <ul className="alerts">
         {err ? <li className="note warn">{err}</li>
           : !alerts ? <li className="note">Loading alerts…</li>
-          : !alerts.length ? <li className="note">No active alerts. Ask Nova, e.g. <code>alert TSLA below 200</code>.</li>
+          : !alerts.length ? <li className="note">No active alerts. Ask Agent, e.g. <code>alert TSLA below 200</code>.</li>
           : alerts.map((a) => (
             <li key={a.alert_id}>
               <span className="n"><b>{a.symbol.split(":")[1] ?? a.symbol}</b> {CONDITION_WORD[a.condition_type] ?? a.condition_type} <span className="num">{fmtPx(a.threshold)}</span></span>
@@ -456,7 +456,7 @@ function Alerts() {
   );
 }
 
-// ---------- Nova console ----------
+// ---------- Agent console ----------
 function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbols: string[]; selected: string | null; watchlistId: string | null; onWatchlistChanged: () => void }) {
   const [log, setLog] = useState<LogItem[]>([]);
   const [input, setInput] = useState("");
@@ -469,7 +469,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
   useEffect(() => { logEl.current?.scrollTo({ top: logEl.current.scrollHeight }); }, [log]);
 
   const patch = (id: number, f: (i: LogItem) => LogItem) => setLog((l) => l.map((i) => (i.id === id ? f(i) : i)));
-  // Other panels (the pattern pane) can send Nova a command.
+  // Other panels (the pattern pane) can send Agent a command.
   const askRef = useRef<(t: string) => void>(() => {});
   useEffect(() => {
     const on = (e: Event) => { askRef.current((e as CustomEvent<string>).detail); document.querySelector(".console")?.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
@@ -497,7 +497,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
         window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
         throw new Error(j.error || "Connect TradingView first.");
       }
-      if (!res.ok || !res.body) throw new Error("Nova is unavailable right now.");
+      if (!res.ok || !res.body) throw new Error("Agent is unavailable right now.");
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
@@ -549,8 +549,8 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
   return (
     <div className="pane console">
       <div className="persona">
-        <div className="mark" aria-hidden="true">N</div>
-        <div><h2>Nova</h2><p>Data-first analyst · research and alerts, no trading</p></div>
+        <div className="mark" aria-hidden="true">A</div>
+        <div><h2>Agent</h2><p>Data-first analyst · research and alerts, no trading</p></div>
         <div className="persona-opts">
           <ModelSelect />
           <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)} aria-label="Answer depth">
@@ -591,7 +591,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
         })}
       </div>
       <form className="ask" onSubmit={(e) => { e.preventDefault(); ask(input); }}>
-        <input id="ask-in" value={input} onChange={(e) => setInput(e.target.value)} placeholder="analyze SET:PTT" aria-label="Command for Nova" autoComplete="off" />
+        <input id="ask-in" value={input} onChange={(e) => setInput(e.target.value)} placeholder="analyze SET:PTT" aria-label="Command for Agent" autoComplete="off" />
         {busy ? <button className="btn" type="button" onClick={() => ctl.current?.abort()}>Stop</button>
           : <button className="btn primary" type="submit">Send</button>}
       </form>

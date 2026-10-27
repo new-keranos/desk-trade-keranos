@@ -1,4 +1,4 @@
-// Which AI runs Nova and the scanner. No imports, so any module can read it without import cycles.
+// Which AI runs Agent and the scanner. No imports, so any module can read it without import cycles.
 // The server default comes from AI_PROVIDER; each request can pick another model the server has a key for.
 
 export type Provider = "gemini" | "claude" | "openai";

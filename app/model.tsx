@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-// The AI model picker, shared by the Nova console and the pattern scanner.
-// The choice lives in this browser and goes with every Nova and scan request.
+// The AI model picker, shared by the Agent console and the pattern scanner.
+// The choice lives in this browser and goes with every Agent and scan request.
 
 export type ModelOption = { provider: "gemini" | "claude" | "openai"; model: string; label: string };
 type Choice = Pick<ModelOption, "provider" | "model">;
@@ -43,7 +43,7 @@ export function ModelSelect({ className }: { className?: string }) {
   if (!models.length) return null;
   const value = choice ? `${choice.provider}|${choice.model}` : "";
   return (
-    <select className={className} value={value} aria-label="AI model" title="AI model for Nova and the scanner"
+    <select className={className} value={value} aria-label="AI model" title="AI model for Agent and the scanner"
       onChange={(e) => { const [provider, ...rest] = e.target.value.split("|"); pick({ provider: provider as Choice["provider"], model: rest.join("|") }); }}>
       {models.map((m) => <option key={`${m.provider}|${m.model}`} value={`${m.provider}|${m.model}`}>{m.label}</option>)}
     </select>

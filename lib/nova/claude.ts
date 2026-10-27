@@ -32,7 +32,7 @@ export async function runClaude(opts: RunOptions): Promise<void> {
       if (block.type === "text" && block.text.trim()) emit({ type: "text", text: block.text });
     }
     if (response.stop_reason === "refusal") {
-      emit({ type: "error", message: "Nova declined that request. Try rephrasing it." });
+      emit({ type: "error", message: "Agent declined that request. Try rephrasing it." });
       return;
     }
     if (response.stop_reason === "pause_turn") {

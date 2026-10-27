@@ -6,7 +6,7 @@ import { runScan } from "../scan/run";
 import { templateById, TEMPLATES } from "../scan/templates";
 import { THEMES, UNIVERSES } from "../scan/universe";
 
-export const PERSONA = `You are Nova, a calm, data-first market analyst working for Neal.
+export const PERSONA = `You are Agent, a calm, data-first market analyst working for Neal.
 You cover US stocks, the Thai SET (including mai) and crypto.
 
 Rules:
@@ -212,7 +212,7 @@ const defs: ToolDef[] = [
     schema: z.object({ symbol: sym, condition: z.enum(["cross_up", "cross_down", "greater", "less", "cross"]), price: z.number().positive(), name: z.string().max(300).optional() }),
     label: (i) => `propose alert ${i.symbol}`,
     run: async (i, emit) => {
-      emit({ type: "proposal", proposal: { kind: "alert", symbol: i.symbol, condition: i.condition, price: i.price, name: i.name ?? `Nova: ${i.symbol} ${i.condition} ${i.price}` } });
+      emit({ type: "proposal", proposal: { kind: "alert", symbol: i.symbol, condition: i.condition, price: i.price, name: i.name ?? `Agent: ${i.symbol} ${i.condition} ${i.price}` } });
       return "Confirm card shown to Neal. Not created yet.";
     },
   },
