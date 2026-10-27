@@ -1,5 +1,6 @@
 import "server-only";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { cookies } from "next/headers";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -41,37 +42,107 @@ export class TvError extends Error {}
 /** The user has not connected TradingView yet, or the connection expired. */
 export class TvAuthError extends TvError {}
 
-// ---------- OAuth state, kept in one encrypted httpOnly cookie ----------
-const COOKIE = "tv_oauth";
+// ---------- OAuth state ----------
+// Kept encrypted in one of two places:
+// - by default, httpOnly cookies in each browser (every browser connects its own TradingView account);
+// - with TV_SHARED_LOGIN=1 and an Upstash Redis database, one server-side login that every user of the app shares.
 type Stored = { client?: OAuthClientInformationMixed; tokens?: OAuthTokens; verifier?: string; state?: string };
+type Store = { load(): Promise<Stored>; save(s: Stored): Promise<void>; clear(): Promise<void>; shared: boolean };
+
+/** Thrown when this request lost a token-refresh race to a parallel request; retrying a moment later works. */
+export class TvRetryError extends TvError {}
 
 function key(): Buffer {
   const secret = process.env.SESSION_SECRET || process.env.APP_PASSWORD;
   if (!secret) throw new TvError("Set SESSION_SECRET (or APP_PASSWORD) to store the TradingView login.");
   return createHash("sha256").update("keranos-desk-tv:" + secret).digest();
 }
+// Compressed before encryption: TradingView's tokens are long, and a browser drops any cookie over 4 KB.
 function seal(data: Stored): string {
   const iv = randomBytes(12);
   const c = createCipheriv("aes-256-gcm", key(), iv);
-  const body = Buffer.concat([c.update(JSON.stringify(data), "utf8"), c.final()]);
-  return Buffer.concat([iv, c.getAuthTag(), body]).toString("base64url");
+  const body = Buffer.concat([c.update(deflateRawSync(Buffer.from(JSON.stringify(data), "utf8"))), c.final()]);
+  return "z" + Buffer.concat([iv, c.getAuthTag(), body]).toString("base64url");
 }
-function unseal(raw: string | undefined): Stored {
+function unseal(raw: string | undefined | null): Stored {
   if (!raw) return {};
   try {
-    const buf = Buffer.from(raw, "base64url");
+    const packed = raw.startsWith("z");
+    const buf = Buffer.from(packed ? raw.slice(1) : raw, "base64url");
     const d = createDecipheriv("aes-256-gcm", key(), buf.subarray(0, 12));
     d.setAuthTag(buf.subarray(12, 28));
-    return JSON.parse(Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString("utf8"));
+    const plain = Buffer.concat([d.update(buf.subarray(28)), d.final()]);
+    return JSON.parse((packed ? inflateRawSync(plain) : plain).toString("utf8"));
   } catch {
     return {};
   }
 }
+/** Keep only what refreshing needs: an id_token or other extras would only make the cookie bigger. */
+function slim(s: Stored): Stored {
+  const t = s.tokens;
+  if (!t) return s;
+  const { access_token, token_type, expires_in, refresh_token, scope } = t;
+  const issuer = (t as { issuer?: string }).issuer;
+  return { ...s, tokens: { access_token, token_type, expires_in, refresh_token, scope, ...(issuer ? { issuer } : {}) } as OAuthTokens };
+}
 
-/** OAuth provider for the MCP SDK, backed by the request's cookies. Must run before a response starts streaming. */
-class CookieProvider implements OAuthClientProvider {
+const COOKIE = "tv_oauth";
+const CHUNK = 3800;
+const MAX_CHUNKS = 4;
+async function cookieStore(): Promise<Store> {
+  const jar = await cookies();
+  const read = () => {
+    const parts = [];
+    for (let i = 0; i < MAX_CHUNKS; i++) { const v = jar.get(`${COOKIE}.${i}`)?.value; if (!v) break; parts.push(v); }
+    return parts.length ? parts.join("") : jar.get(COOKIE)?.value; // older single-cookie logins
+  };
+  const opts = { httpOnly: true, secure: true, sameSite: "lax" as const, path: "/", maxAge: 60 * 60 * 24 * 60 };
+  const clear = async () => { jar.delete(COOKIE); for (let i = 0; i < MAX_CHUNKS; i++) jar.delete(`${COOKIE}.${i}`); };
+  return {
+    shared: false,
+    load: async () => unseal(read()),
+    save: async (s) => {
+      const v = seal(slim(s));
+      const n = Math.ceil(v.length / CHUNK);
+      if (n > MAX_CHUNKS) throw new TvError("The TradingView login is too large to keep in a cookie. Use the shared login (TV_SHARED_LOGIN) instead.");
+      for (let i = 0; i < MAX_CHUNKS; i++) {
+        if (i < n) jar.set(`${COOKIE}.${i}`, v.slice(i * CHUNK, (i + 1) * CHUNK), opts);
+        else if (jar.get(`${COOKIE}.${i}`)) jar.delete(`${COOKIE}.${i}`);
+      }
+      if (jar.get(COOKIE)) jar.delete(COOKIE);
+    },
+    clear,
+  };
+}
+
+// Upstash Redis over its REST API (Vercel Marketplace sets KV_REST_API_* or UPSTASH_REDIS_REST_*).
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+const REDIS_KEY = "keranos:tv_oauth";
+/** One TradingView login for everyone who can open the app. */
+export const sharedLogin = () => process.env.TV_SHARED_LOGIN === "1" && !!REDIS_URL && !!REDIS_TOKEN;
+async function redis(cmd: string[]): Promise<unknown> {
+  const r = await fetch(REDIS_URL!, { method: "POST", headers: { Authorization: `Bearer ${REDIS_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify(cmd), cache: "no-store" });
+  const j = (await r.json().catch(() => ({}))) as { result?: unknown; error?: string };
+  if (!r.ok || j.error) throw new TvError(`Couldn't reach the login store (Redis): ${j.error ?? r.status}`);
+  return j.result;
+}
+const redisStore: Store = {
+  shared: true,
+  load: async () => unseal((await redis(["GET", REDIS_KEY])) as string | null),
+  save: async (s) => { await redis(["SET", REDIS_KEY, seal(slim(s))]); },
+  clear: async () => { await redis(["DEL", REDIS_KEY]); },
+};
+
+const openStore = async (): Promise<Store> => (sharedLogin() ? redisStore : cookieStore());
+
+/** OAuth provider for the MCP SDK, backed by the login store. Must run before a response starts streaming. */
+class StoreProvider implements OAuthClientProvider {
   authUrl: URL | null = null;
-  constructor(private store: Stored, private origin: string, private persist: (s: Stored) => Promise<void>) {}
+  /** Set when a parallel request already used our refresh token (TradingView rotates it on every refresh). */
+  raced = false;
+  constructor(private store: Stored, private origin: string, private db: Store) {}
+  private persist() { return this.db.save(this.store); }
 
   get redirectUrl() { return `${this.origin}/api/tv/callback`; }
   get clientMetadata(): OAuthClientMetadata {
@@ -85,30 +156,44 @@ class CookieProvider implements OAuthClientProvider {
   }
   state() { const s = randomBytes(16).toString("hex"); this.store.state = s; return s; }
   clientInformation() { return this.store.client; }
-  async saveClientInformation(info: OAuthClientInformationMixed) { this.store.client = info; await this.persist(this.store); }
+  async saveClientInformation(info: OAuthClientInformationMixed) { this.store.client = info; await this.persist(); }
   tokens() { return this.store.tokens; }
-  async saveTokens(tokens: OAuthTokens) { this.store.tokens = tokens; await this.persist(this.store); }
-  async redirectToAuthorization(url: URL) { this.authUrl = url; await this.persist(this.store); }
-  async saveCodeVerifier(v: string) { this.store.verifier = v; await this.persist(this.store); }
+  async saveTokens(tokens: OAuthTokens) { this.store.tokens = tokens; this.raced = false; await this.persist(); }
+  async redirectToAuthorization(url: URL) {
+    this.authUrl = url;
+    // A request that lost a refresh race must not overwrite the login the winning request just saved.
+    if (!this.raced) await this.persist();
+  }
+  async saveCodeVerifier(v: string) { this.store.verifier = v; if (!this.raced) await this.persist(); }
   codeVerifier() {
     if (!this.store.verifier) throw new TvAuthError("TradingView login expired. Connect again.");
     return this.store.verifier;
   }
   async invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery") {
+    if (scope === "tokens" && this.store.tokens?.refresh_token) {
+      // Our refresh token was rejected. Usually a parallel request refreshed first and rotated it.
+      // In the shared store the winner may still be saving, so look again a few times.
+      for (let i = 0; i < (this.db.shared ? 4 : 1); i++) {
+        if (i) await new Promise((ok) => setTimeout(ok, 700));
+        const latest = await this.db.load();
+        if (latest.tokens?.refresh_token && latest.tokens.refresh_token !== this.store.tokens.refresh_token) {
+          this.store = latest; // a parallel request already refreshed: carry on with its tokens
+          return;
+        }
+      }
+      if (!this.db.shared) { this.raced = true; delete this.store.tokens; return; } // cookies: the winner's Set-Cookie will land
+    }
     if (scope === "all" || scope === "client") delete this.store.client;
     if (scope === "all" || scope === "tokens") delete this.store.tokens;
     if (scope === "all" || scope === "verifier") delete this.store.verifier;
-    await this.persist(this.store);
+    await this.persist();
   }
   get expectedState() { return this.store.state; }
 }
 
-async function provider(origin: string): Promise<CookieProvider> {
-  const jar = await cookies();
-  const store = unseal(jar.get(COOKIE)?.value);
-  return new CookieProvider(store, origin, async (s) => {
-    jar.set(COOKIE, seal(s), { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 60 });
-  });
+async function provider(origin: string): Promise<StoreProvider> {
+  const db = await openStore();
+  return new StoreProvider(await db.load(), origin, db);
 }
 
 /** Start the OAuth flow. Returns the TradingView login URL, or null when already connected. */
@@ -140,6 +225,7 @@ export async function openTv(origin: string): Promise<{ call: TvCaller; close: (
   try {
     await client.connect(transport);
   } catch (err) {
+    if (p.raced) throw new TvRetryError("TradingView login is refreshing. Try again in a moment.");
     if (err instanceof UnauthorizedError || p.authUrl) throw new TvAuthError("TradingView login expired. Connect again.");
     throw new TvError(`Could not connect to TradingView: ${(err as Error).message}`);
   }
@@ -148,6 +234,7 @@ export async function openTv(origin: string): Promise<{ call: TvCaller; close: (
     try {
       res = await client.callTool({ name: tool, arguments: args });
     } catch (err) {
+      if (p.raced) throw new TvRetryError("TradingView login is refreshing. Try again in a moment.");
       if (err instanceof UnauthorizedError) throw new TvAuthError("TradingView login expired. Connect again.");
       throw new TvError(`TradingView call failed: ${(err as Error).message}`);
     }
@@ -161,7 +248,7 @@ export async function openTv(origin: string): Promise<{ call: TvCaller; close: (
 
 /** Forget the TradingView login. */
 export async function disconnectTv(): Promise<void> {
-  (await cookies()).delete(COOKIE);
+  await (await openStore()).clear();
 }
 
 function textOf(content: unknown): string {

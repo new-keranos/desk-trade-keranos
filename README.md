@@ -42,6 +42,7 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
 1. Push this folder to a GitHub repo.
 2. In Vercel, choose **Add New → Project**, import the repo and keep the Next.js defaults.
 3. Add the environment variables from `.env.example` under **Settings → Environment Variables**.
+   - Optional shared TradingView login: by default each browser connects its own TradingView account and stays connected (the login refreshes itself and lasts about 60 days). To connect once and let every app user share that login, add an Upstash Redis database from the Vercel Marketplace and set `TV_SHARED_LOGIN=1`. TradingView's terms are for one person per account, and exchange data (such as SET real-time) is licensed per user, so only share with people you're allowed to.
 4. Deploy. Agent's route allows up to 300 s per answer, which needs a Vercel plan that supports that duration.
 
 ## Commands

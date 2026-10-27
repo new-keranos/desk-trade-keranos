@@ -31,9 +31,11 @@ function ago(unix: number) {
 }
 const CONDITION_WORD: Record<string, string> = { cross_up: "crosses above", cross_down: "crosses below", cross: "crosses", greater: "is above", less: "is below" };
 
-async function tv<T = any>(tool: string, input: Record<string, unknown> = {}): Promise<T> {
+async function tv<T = any>(tool: string, input: Record<string, unknown> = {}, attempt = 0): Promise<T> {
   const r = await fetch("/api/tv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }) });
   const j = await r.json().catch(() => ({}));
+  // Several panels load at once; when the TradingView token expires one request refreshes it and the others retry.
+  if (r.status === 503 && j.retry && attempt < 3) { await new Promise((ok) => setTimeout(ok, 900 * (attempt + 1))); return tv<T>(tool, input, attempt + 1); }
   if (r.status === 401) { location.href = "/login"; throw new Error("Signed out"); }
   if (r.status === 409 && j.connect) window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
   if (!r.ok) throw new Error(j.error || `TradingView request failed (${r.status})`);
