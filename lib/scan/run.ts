@@ -1,7 +1,7 @@
 import "server-only";
 import { TV, type TvCaller } from "../tradingview";
 import { judgeBatch, type Bars, type Stock } from "./judge";
-import { AiBusy, type RefImage } from "./llm";
+import { AiBusy, aiReason, type RefImage } from "./llm";
 import { resample, type Length } from "./match";
 import type { Template } from "./templates";
 import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "./universe";
@@ -75,7 +75,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const batches: Stock[][] = [];
   for (let k = 0; k < loaded.length; k += BATCH) batches.push(loaded.slice(k, k + BATCH));
   const verdicts: Awaited<ReturnType<typeof judgeBatch>> = [];
-  let read = 0, unread = 0, nb = 0, failed = 0;
+  let read = 0, unread = 0, nb = 0, failed = 0, reason = "";
   emit({ type: "status", text: `AI is reading ${loaded.length} charts`, done: 0, total: loaded.length });
   const reader = async () => {
     while (nb < batches.length && !o.signal?.aborted) {
@@ -91,8 +91,9 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
             await wait(BUSY_WAIT_MS, o.signal);
             continue;
           }
+          console.error("scan: AI batch failed", err);
           unread += batch.length;
-          if (!(err instanceof AiBusy)) failed++;
+          if (!(err instanceof AiBusy)) { failed++; reason ||= aiReason(err); }
           break;
         }
       }
@@ -101,8 +102,8 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
     }
   };
   await Promise.all(Array.from({ length: AI_CONCURRENCY }, reader));
-  if (unread) notes.push(`The AI couldn't read ${unread} charts${failed ? "" : " (rate limit)"}. Scan again in a minute to include them.`);
-  if (unread === loaded.length && loaded.length) throw new Error(failed ? "The AI couldn't read the charts. Try again." : "AI rate limit reached. Wait a minute and try again.");
+  if (unread) notes.push(`The AI couldn't read ${unread} charts (${reason || "rate limit"}). Scan again in a minute to include them.`);
+  if (unread === loaded.length && loaded.length) throw new Error(failed ? `The AI couldn't read the charts: ${reason}.` : "AI rate limit reached. Wait a minute and try again.");
 
   const info = new Map(list.map((s) => [s.symbol, s]));
   const rows: ScanRow[] = verdicts.filter((v) => v.confidence >= MIN_CONFIDENCE).map((v) => {

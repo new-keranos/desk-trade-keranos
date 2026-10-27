@@ -60,7 +60,7 @@ const SCHEMA = {
       items: {
         type: "object",
         properties: {
-          symbol: { type: "string" }, match: { type: "boolean" }, confidence: { type: "integer", minimum: 0, maximum: 100 },
+          symbol: { type: "string" }, match: { type: "boolean" }, confidence: { type: "integer" },
           stage: { type: "string", enum: ["forming", "complete", "breakout", "failed"] },
           start: { type: "integer" }, end: { type: "integer" },
           points: { type: "array", items: Point }, lines: { type: "array", items: Line },
@@ -74,17 +74,23 @@ const SCHEMA = {
   required: ["results"],
 };
 
-const Reply = z.object({
-  results: z.array(z.object({
-    symbol: z.string(), match: z.boolean(), confidence: z.number().min(0).max(100),
-    stage: z.enum(["forming", "complete", "breakout", "failed"]).optional(),
-    start: z.number().int().optional(), end: z.number().int().optional(),
-    points: z.array(z.object({ i: z.number().int(), price: z.number(), label: z.string().max(40) })).max(16).optional(),
-    lines: z.array(z.object({ i1: z.number().int(), p1: z.number(), i2: z.number().int(), p2: z.number(), role: z.enum(["upper", "lower", "level"]), label: z.string().max(40), extend: z.boolean().optional() })).max(6).optional(),
-    evidence: z.array(z.string().max(240)).max(6).optional(), summary: z.string().max(500).optional(),
-    breakout: z.number().optional(), invalidation: z.number().optional(),
-  }).passthrough()),
+// Lenient on purpose: models send floats for integers, nulls for missing fields and long labels.
+// Anything odd is fixed or dropped here so one stray field never loses the whole batch.
+const num = z.preprocess((v) => (v == null || v === "" ? undefined : typeof v === "string" ? Number(v) : v), z.number().finite().optional());
+const int = num.transform((v) => (v == null ? undefined : Math.round(v)));
+const text = (max: number) => z.preprocess((v) => (v == null ? undefined : String(v)), z.string().optional()).transform((v) => v?.slice(0, max));
+const list = <T extends z.ZodTypeAny>(item: T, max: number) =>
+  z.preprocess((v) => (Array.isArray(v) ? v : []), z.array(z.unknown())).transform((v) => v.flatMap((x) => { const r = item.safeParse(x); return r.success ? [r.data as z.infer<T>] : []; }).slice(0, max));
+const PointR = z.object({ i: int, price: num, label: text(40) }).refine((p) => p.i != null && p.price != null);
+const LineR = z.object({ i1: int, p1: num, i2: int, p2: num, role: z.enum(["upper", "lower", "level"]).catch("level"), label: text(40), extend: z.boolean().catch(false) })
+  .refine((l) => l.i1 != null && l.p1 != null && l.i2 != null && l.p2 != null);
+const ResultR = z.object({
+  symbol: z.string(), match: z.preprocess((v) => v === true || v === "true", z.boolean()), confidence: num.transform((v) => Math.max(0, Math.min(100, v ?? 0))),
+  stage: z.enum(["forming", "complete", "breakout", "failed"]).optional().catch(undefined),
+  start: int, end: int, points: list(PointR, 16), lines: list(LineR, 6),
+  evidence: list(z.string().transform((v) => v.slice(0, 240)), 6), summary: text(500), breakout: num, invalidation: num,
 });
+const Reply = z.object({ results: list(ResultR, 50) });
 
 /** A match in daily-bar indexes of the stock's own bars. */
 export type Verdict = {
@@ -140,18 +146,18 @@ ${views.map((v) => `### ${v.s.symbol} (${v.s.name}), ${v.idx.length} rows, last 
   const out: Verdict[] = [];
   for (const r of raw.results) {
     const v = views.find((x) => x.s.symbol === r.symbol || x.s.symbol.endsWith(":" + r.symbol));
-    if (!v || !r.match || !r.points?.length) continue;
+    if (!v || !r.match || !r.points.length) continue;
     const at = (i: number) => v.idx[Math.max(0, Math.min(v.idx.length - 1, i))];
     const b = v.s.bars, rad = step + 2;
-    const points = r.points.map((p) => ({ ...snap(b, at(p.i), p.price, rad), label: p.label })).sort((a, c) => a.k - c.k);
-    const lines = (r.lines ?? []).map((l) => {
-      const a = snap(b, at(l.i1), l.p1, rad), c = snap(b, at(l.i2), l.p2, rad);
-      return { k1: a.k, p1: a.price, k2: c.k, p2: c.price, role: l.role, label: l.label, extend: !!l.extend };
+    const points = r.points.map((p) => ({ ...snap(b, at(p.i!), p.price!, rad), label: p.label ?? "" })).sort((a, c) => a.k - c.k);
+    const lines = r.lines.map((l) => {
+      const a = snap(b, at(l.i1!), l.p1!, rad), c = snap(b, at(l.i2!), l.p2!, rad);
+      return { k1: a.k, p1: a.price, k2: c.k, p2: c.price, role: l.role, label: l.label ?? "", extend: l.extend };
     }).filter((l) => l.k2 > l.k1);
     const ks = [...points.map((p) => p.k), ...lines.flatMap((l) => [l.k1, l.k2])];
     const start = Math.min(r.start != null ? at(r.start) : Infinity, ...ks), end = Math.max(r.end != null ? at(r.end) : -Infinity, ...ks);
     out.push({ symbol: v.s.symbol, confidence: Math.round(r.confidence), stage: r.stage, start, end, points, lines,
-      evidence: r.evidence ?? [], summary: r.summary, breakout: r.breakout, invalidation: r.invalidation });
+      evidence: r.evidence, summary: r.summary, breakout: r.breakout, invalidation: r.invalidation });
   }
   return out;
 }
