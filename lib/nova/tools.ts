@@ -1,4 +1,5 @@
 import "server-only";
+import type { ModelChoice } from "./config";
 import { z } from "zod";
 import { TV, type TvCaller } from "../tradingview";
 import { runScan } from "../scan/run";
@@ -51,7 +52,7 @@ const clip = (v: unknown) => {
 
 /** Provider-neutral tool definition: JSON Schema input, zod validation, server-side runner. */
 export type ToolSpec = { name: string; description: string; input_schema: { type: "object"; properties: Record<string, unknown>; required?: string[] } };
-export type NovaContext = { watchlist: string[]; selected: string | null; tv: TvCaller };
+export type NovaContext = { watchlist: string[]; selected: string | null; tv: TvCaller; ai: ModelChoice };
 
 type ToolDef = {
   tool: ToolSpec;
@@ -156,7 +157,7 @@ const defs: ToolDef[] = [
     run: async (i, _e, ctx) => {
       const t = templateById(i.pattern);
       if (!t) throw new Error(`Unknown pattern. Use one of: ${TEMPLATES.map((x) => x.id).join(", ")}`);
-      const r = await runScan({ tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", template: t, limit: 10 }, () => {});
+      const r = await runScan({ ai: ctx.ai, tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", template: t, limit: 10 }, () => {});
       return { pattern: t.name, bias: t.bias, checked: r.checked, note: r.note, matches: r.rows.map(({ closes: _c, points: _p, lines: _l, ...row }) => row) };
     },
   },

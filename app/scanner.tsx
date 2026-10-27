@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { cls, fmtPct, fmtPx, market } from "./format";
+import { currentModel, ModelSelect } from "./model";
 import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 
@@ -98,7 +99,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
     ctl.current = new AbortController();
     try {
       const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
-        body: JSON.stringify({ universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } }) });
+        body: JSON.stringify({ ai: currentModel(), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } }) });
       if (res.status === 401) { location.href = "/login"; return; }
       if (res.status === 409) {
         const j = await res.json().catch(() => ({}));
@@ -194,6 +195,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
       <div className="scan-run">
         {busy ? <button className="btn" type="button" onClick={() => ctl.current?.abort()}>Stop</button>
           : <button className="btn primary" type="button" onClick={scan}>Scan</button>}
+        {!busy && <ModelSelect className="scan-model" />}
         {status && (
           <div className="scan-status" role="status">
             <span>{status.text}</span>

@@ -1,6 +1,5 @@
 import "server-only";
 import { GoogleGenAI, type Content, type Part } from "@google/genai";
-import { GEMINI_MODEL } from "./config";
 import { contextLine, executeTool, MAX_ROUNDS, OUT_OF_ROUNDS, PERSONA, TOOL_SPECS, type RunOptions } from "./tools";
 
 
@@ -14,7 +13,7 @@ export async function runGemini(opts: RunOptions): Promise<void> {
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await ai.models.generateContent({
-      model: GEMINI_MODEL,
+      model: opts.ai.model,
       contents,
       config: {
         systemInstruction: PERSONA + "\n\n" + contextLine(opts),

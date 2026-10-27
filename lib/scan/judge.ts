@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import type { ModelChoice } from "../nova/config";
 import { askJson, type RefImage } from "./llm";
 import type { Length } from "./match";
 import type { Template } from "./templates";
@@ -134,14 +135,14 @@ export function patternBrief(template?: Template) {
 }
 
 /** Ask the AI about one batch of stocks. Returns verdicts for the matches only. */
-export async function judgeBatch(stocks: Stock[], o: { template?: Template; image?: RefImage; length: Length; signal?: AbortSignal }): Promise<Verdict[]> {
+export async function judgeBatch(stocks: Stock[], o: { ai: ModelChoice; template?: Template; image?: RefImage; length: Length; signal?: AbortSignal }): Promise<Verdict[]> {
   const views = stocks.map((s) => ({ s, ...rowsFor(s.bars, o.length) }));
   const step = VIEW[o.length].step;
   const prompt = `${patternBrief(o.template)}
 Each row covers ${step === 1 ? "one trading day" : `${step} trading days`}.
 
 ${views.map((v) => `### ${v.s.symbol} (${v.s.name}), ${v.idx.length} rows, last row = latest bar\n${v.text}`).join("\n\n")}`;
-  const raw = Reply.parse(await askJson({ system: SYSTEM, prompt, image: o.image, schema: SCHEMA, signal: o.signal }));
+  const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, image: o.image, schema: SCHEMA, signal: o.signal }));
 
   const out: Verdict[] = [];
   for (const r of raw.results) {

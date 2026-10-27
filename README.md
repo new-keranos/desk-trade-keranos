@@ -16,8 +16,8 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
 
 - `lib/tradingview.ts` connects to TradingView's official MCP server (`https://mcp.tradingview.com/mcp`, Streamable HTTP) and signs in with OAuth 2.1. The login is kept in an encrypted httpOnly cookie. Needs a TradingView Essential plan or higher.
 - `lib/nova/tools.ts` holds the persona prompt and the TradingView tools. Edit `PERSONA` to change how Nova talks.
-- `lib/nova/gemini.ts` runs Nova on Gemini (default, `gemini-flash-latest`, free tier). `lib/nova/claude.ts` runs it on Claude (`claude-opus-5-5`). Pick with `AI_PROVIDER`. API keys stay on the server.
-- `lib/scan/` is the pattern scanner. `templates.ts` lists the patterns, `judge.ts` sends batches of 8 stocks' daily bars to the AI with the pattern's definition and maps its marks back onto real candles, `llm.ts` makes the JSON call to Gemini (or Claude with `AI_PROVIDER=claude`), and `universe.ts` maps markets and themes to TradingView screener filters. One scan checks up to 80 stocks, largest first, to stay inside TradingView's limit of about 100 calls a minute; that is about 10 AI requests, which the Gemini free tier allows a few times an hour.
+- `lib/nova/gemini.ts`, `openai.ts` and `claude.ts` run Nova on Gemini (default, `gemini-flash-latest`), OpenAI or Claude. `lib/nova/config.ts` lists the models; the picker in the Nova panel (also on the scanner) offers every provider whose API key is set, and `AI_PROVIDER` sets the default. API keys stay on the server.
+- `lib/scan/` is the pattern scanner. `templates.ts` lists the patterns, `judge.ts` sends batches of 8 stocks' daily bars to the AI with the pattern's definition and maps its marks back onto real candles, `llm.ts` makes the JSON call to the chosen Gemini, OpenAI or Claude model, and `universe.ts` maps markets and themes to TradingView screener filters. One scan checks up to 80 stocks, largest first, to stay inside TradingView's limit of about 100 calls a minute; that is about 10 AI requests, which the Gemini free tier allows a few times an hour.
 - `middleware.ts` puts the whole app behind one password.
 - On Claude, refusal fallback is on (`fallbacks: "default"`), so a declined request is retried on a fallback model automatically.
 
@@ -30,7 +30,7 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
 
 1. Copy `.env.example` to `.env.local` and fill in:
    - `GEMINI_API_KEY` from https://aistudio.google.com/apikey (free).
-   - Optional: `AI_PROVIDER=claude` plus `ANTHROPIC_API_KEY` from https://console.anthropic.com to run Nova on Claude (billed per token).
+   - Optional: `OPENAI_API_KEY` from https://platform.openai.com and/or `ANTHROPIC_API_KEY` from https://console.anthropic.com (both billed per token). Each key adds that provider's models to the picker. `AI_PROVIDER=openai` or `claude` makes it the default.
    - `APP_PASSWORD`: any password you choose, and `SESSION_SECRET`: a long random string.
    - On a deployed site, `APP_URL` with its public address.
 2. `npm install`

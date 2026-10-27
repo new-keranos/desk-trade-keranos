@@ -1,4 +1,5 @@
 import "server-only";
+import type { ModelChoice } from "../nova/config";
 import { TV, type TvCaller } from "../tradingview";
 import { judgeBatch, type Bars, type Stock } from "./judge";
 import { AiBusy, aiReason, type RefImage } from "./llm";
@@ -32,7 +33,7 @@ export type ScanEvent =
   | { type: "error"; message: string }
   | { type: "done" };
 
-export type ScanOptions = { tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; signal?: AbortSignal };
+export type ScanOptions = { ai: ModelChoice; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; signal?: AbortSignal };
 
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((ok) => { const id = setTimeout(ok, ms); signal?.addEventListener("abort", () => { clearTimeout(id); ok(); }, { once: true }); });

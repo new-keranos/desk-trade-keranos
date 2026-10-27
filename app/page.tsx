@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
 import Scanner, { type PatternHit } from "./scanner";
 import Candles, { type Ohlcv } from "./candles";
+import { currentModel, ModelSelect } from "./model";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
 
 // ---------- helpers ----------
@@ -489,7 +490,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
     let answer = "";
     try {
       const res = await fetch("/api/nova", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
-        body: JSON.stringify({ messages: history, effort, watchlist: symbols, selected }) });
+        body: JSON.stringify({ messages: history, effort, watchlist: symbols, selected, ai: currentModel() }) });
       if (res.status === 401) { location.href = "/login"; return; }
       if (res.status === 409) {
         const j = await res.json().catch(() => ({}));
@@ -550,9 +551,12 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
       <div className="persona">
         <div className="mark" aria-hidden="true">N</div>
         <div><h2>Nova</h2><p>Data-first analyst · research and alerts, no trading</p></div>
-        <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)} aria-label="Answer depth">
-          <option value="low">Fast</option><option value="medium">Balanced</option><option value="high">Deep</option>
-        </select>
+        <div className="persona-opts">
+          <ModelSelect />
+          <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)} aria-label="Answer depth">
+            <option value="low">Fast</option><option value="medium">Balanced</option><option value="high">Deep</option>
+          </select>
+        </div>
       </div>
       <div className="cmds chips" aria-label="Quick commands">
         {CMDS.map(([l, c]) => (

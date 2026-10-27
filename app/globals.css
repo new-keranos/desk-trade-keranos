@@ -192,7 +192,9 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .mark { width: 34px; height: 34px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--glow); color: #fff; font-weight: 700; font-size: 15px; }
 .persona h2 { margin: 0; font-size: 15px; font-weight: 500; }
 .persona p { margin: 0; font-size: 12px; color: var(--faint); }
-.persona select { margin-left: auto; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); padding: 5px 10px; font-size: 12px; }
+.persona { flex-wrap: wrap; }
+.persona-opts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.persona select, .scan-model { border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--ink); padding: 5px 10px; font-size: 12px; max-width: 100%; }
 .cmds { padding: 10px 16px; border-bottom: 1px solid var(--line); }
 .log { padding: 16px; display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 240px; overflow-y: auto; }
 .msg { max-width: 100%; min-width: 0; }

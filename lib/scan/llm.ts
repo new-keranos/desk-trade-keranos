@@ -1,7 +1,8 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { ApiError, GoogleGenAI } from "@google/genai";
-import { CLAUDE_MODEL, GEMINI_MODEL, provider } from "../nova/config";
+import OpenAI from "openai";
+import { reasons, type ModelChoice } from "../nova/config";
 
 export type RefImage = { mime: "image/jpeg" | "image/png" | "image/webp"; data: string };
 
@@ -10,11 +11,13 @@ export class AiBusy extends Error {}
 
 let gemini: GoogleGenAI | null = null;
 let claude: Anthropic | null = null;
+let openai: OpenAI | null = null;
 
 /** Short, user-safe description of why an AI call failed. */
 export function aiReason(err: unknown): string {
-  if (err instanceof ApiError) return `Gemini error ${err.status}${/API key/i.test(err.message) ? " (check GEMINI_API_KEY)" : /model/i.test(err.message) && err.status === 404 ? " (check GEMINI_MODEL)" : ""}`;
-  if (err instanceof Anthropic.APIError) return `Claude error ${err.status ?? ""}`.trim();
+  if (err instanceof ApiError) return `Gemini error ${err.status}${err.status === 402 ? " (this API key needs billing; check Google AI Studio or pick another model)" : ""}${/API key/i.test(err.message) ? " (check GEMINI_API_KEY)" : /model/i.test(err.message) && err.status === 404 ? " (check GEMINI_MODEL)" : ""}`;
+  if (err instanceof Anthropic.APIError) return `Claude error ${err.status ?? ""}${err.status === 401 ? " (check ANTHROPIC_API_KEY)" : ""}`.trim();
+  if (err instanceof OpenAI.APIError) return `OpenAI error ${err.status ?? ""}${err.status === 401 ? " (check OPENAI_API_KEY)" : err.code === "insufficient_quota" ? " (no credit left on the OpenAI account)" : ""}`.trim();
   if (err instanceof SyntaxError) return "the AI's reply wasn't valid JSON";
   return err instanceof Error ? err.message.slice(0, 160) : "unknown error";
 }
@@ -23,21 +26,34 @@ export function aiReason(err: unknown): string {
 const RETRY = new Set([429, 500, 502, 503, 504]);
 
 /** One JSON request to the configured AI (Gemini by default, Claude with AI_PROVIDER=claude). Returns the parsed object. */
-export async function askJson(o: { system: string; prompt: string; image?: RefImage; schema: object; signal?: AbortSignal }): Promise<unknown> {
+export async function askJson(o: { ai: ModelChoice; system: string; prompt: string; image?: RefImage; schema: object; signal?: AbortSignal }): Promise<unknown> {
   let text: string;
   try {
-    if (provider() === "claude") {
+    const withSchema = o.prompt + "\n\nReply with JSON only, matching this JSON Schema:\n" + JSON.stringify(o.schema);
+    if (o.ai.provider === "openai") {
+      openai ??= new OpenAI();
+      const content: OpenAI.Chat.ChatCompletionContentPart[] = [{ type: "text", text: withSchema }];
+      if (o.image) content.unshift({ type: "image_url", image_url: { url: `data:${o.image.mime};base64,${o.image.data}` } });
+      const res = await openai.chat.completions.create({
+        model: o.ai.model, response_format: { type: "json_object" }, max_completion_tokens: 32000,
+        ...(reasons(o.ai.model) ? { reasoning_effort: "medium" as const } : {}),
+        messages: [{ role: "system", content: o.system }, { role: "user", content }],
+      }, { signal: o.signal });
+      if (res.choices[0]?.finish_reason === "length") throw new Error("the AI's reply was cut off");
+      text = res.choices[0]?.message?.content ?? "";
+      if (!text.trim()) throw new Error("OpenAI returned an empty reply");
+    } else if (o.ai.provider === "claude") {
       claude ??= new Anthropic();
-      const content: Anthropic.ContentBlockParam[] = [{ type: "text", text: o.prompt + "\n\nReply with JSON only, matching this JSON Schema:\n" + JSON.stringify(o.schema) }];
+      const content: Anthropic.ContentBlockParam[] = [{ type: "text", text: withSchema }];
       if (o.image) content.unshift({ type: "image", source: { type: "base64", media_type: o.image.mime, data: o.image.data } });
-      const res = await claude.messages.create({ model: CLAUDE_MODEL, max_tokens: 16000, system: o.system, messages: [{ role: "user", content }] }, { signal: o.signal });
+      const res = await claude.messages.create({ model: o.ai.model, max_tokens: 16000, system: o.system, messages: [{ role: "user", content }] }, { signal: o.signal });
       if (res.stop_reason === "max_tokens") throw new Error("the AI's reply was cut off");
       text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
     } else {
       gemini ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const parts = [...(o.image ? [{ inlineData: { mimeType: o.image.mime, data: o.image.data } }] : []), { text: o.prompt }];
       const res = await gemini.models.generateContent({
-        model: GEMINI_MODEL,
+        model: o.ai.model,
         contents: [{ role: "user", parts }],
         // Thinking tokens count toward the output limit, so leave plenty of room for the JSON.
         config: { systemInstruction: o.system, responseMimeType: "application/json", responseJsonSchema: o.schema, maxOutputTokens: 60000, abortSignal: o.signal },
@@ -50,6 +66,8 @@ export async function askJson(o: { system: string; prompt: string; image?: RefIm
   } catch (err) {
     if (err instanceof ApiError && RETRY.has(err.status)) throw new AiBusy(err.status === 429 ? "Gemini free-tier limit reached." : "Gemini is overloaded.");
     if (err instanceof Anthropic.APIError && err.status != null && RETRY.has(err.status)) throw new AiBusy("Claude is busy.");
+    // An empty OpenAI account also answers 429; waiting won't fix that.
+    if (err instanceof OpenAI.APIError && err.status != null && RETRY.has(err.status) && err.code !== "insufficient_quota") throw new AiBusy("OpenAI is busy.");
     throw err;
   }
   return JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));

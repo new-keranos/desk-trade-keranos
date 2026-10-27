@@ -1,6 +1,5 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
-import { CLAUDE_MODEL } from "./config";
 import { contextLine, executeTool, MAX_ROUNDS, OUT_OF_ROUNDS, PERSONA, TOOL_SPECS, type RunOptions } from "./tools";
 
 const TOOLS: Anthropic.Tool[] = TOOL_SPECS;
@@ -14,7 +13,7 @@ export async function runClaude(opts: RunOptions): Promise<void> {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     // Server-side fallback on refusal; the SDK types may not list `fallbacks` yet.
     const params = {
-      model: CLAUDE_MODEL,
+      model: opts.ai.model,
       max_tokens: 16000,
       system: [
         { type: "text" as const, text: PERSONA, cache_control: { type: "ephemeral" as const } },
@@ -22,7 +21,8 @@ export async function runClaude(opts: RunOptions): Promise<void> {
       ],
       tools: TOOLS,
       messages,
-      output_config: { effort: opts.effort },
+      // Haiku has no effort setting.
+      ...(opts.ai.model.includes("haiku") ? {} : { output_config: { effort: opts.effort } }),
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
     };
