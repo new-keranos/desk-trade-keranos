@@ -142,7 +142,8 @@ export async function judgeBatch(stocks: Stock[], o: { ai: ModelChoice; template
 Each row covers ${step === 1 ? "one trading day" : `${step} trading days`}.
 
 ${views.map((v) => `### ${v.s.symbol} (${v.s.name}), ${v.idx.length} rows, last row = latest bar\n${v.text}`).join("\n\n")}`;
-  const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, image: o.image, schema: SCHEMA, signal: o.signal }));
+  const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, image: o.image, schema: SCHEMA, signal: o.signal,
+    label: `${o.template?.name ?? "image pattern"} · ${stocks.map((s) => s.symbol).join(", ")}` }));
 
   const out: Verdict[] = [];
   for (const r of raw.results) {

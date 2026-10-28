@@ -33,6 +33,7 @@ Browser (client) ──> /api/tv    ──> TradingView MCP server (read tools, 
    - Optional: `OPENAI_API_KEY` from https://platform.openai.com and/or `ANTHROPIC_API_KEY` from https://console.anthropic.com (both billed per token). Each key adds that provider's models to the picker. `AI_PROVIDER=openai` or `claude` makes it the default.
    - `APP_PASSWORD`: any password you choose, and `SESSION_SECRET`: a long random string.
    - On a deployed site, `APP_URL` with its public address.
+   - Optional: `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_BASE_URL` to send every AI call to [Langfuse](https://langfuse.com) with its model, tokens and cost. Each chat message is an `agent-chat` trace and each scan a `pattern-scan` trace, tagged `chat` or `scan` plus the provider. Langfuse prices calls from its model price list; a model it doesn't know (or the Gemini free tier, which is $0) needs a price set under **Settings → Models** in Langfuse.
 2. `npm install`
 3. `npm run dev` and open http://localhost:3000
 4. Sign in, then press **Connect TradingView** and log in with your TradingView account. You only do this once per browser.

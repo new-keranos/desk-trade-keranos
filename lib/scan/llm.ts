@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { ApiError, GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import { reasons, type ModelChoice } from "../nova/config";
+import { claudeUsage, geminiUsage, openaiUsage, traceGeneration } from "../telemetry";
 
 export type RefImage = { mime: "image/jpeg" | "image/png" | "image/webp"; data: string };
 
@@ -26,19 +27,20 @@ export function aiReason(err: unknown): string {
 const RETRY = new Set([429, 500, 502, 503, 504]);
 
 /** One JSON request to the configured AI (Gemini by default, Claude with AI_PROVIDER=claude). Returns the parsed object. */
-export async function askJson(o: { ai: ModelChoice; system: string; prompt: string; image?: RefImage; schema: object; signal?: AbortSignal }): Promise<unknown> {
+export async function askJson(o: { ai: ModelChoice; system: string; prompt: string; image?: RefImage; schema: object; signal?: AbortSignal; label?: string }): Promise<unknown> {
   let text: string;
+  const input = { request: o.label, image: !!o.image };
   try {
     const withSchema = o.prompt + "\n\nReply with JSON only, matching this JSON Schema:\n" + JSON.stringify(o.schema);
     if (o.ai.provider === "openai") {
       openai ??= new OpenAI();
       const content: OpenAI.Chat.ChatCompletionContentPart[] = [{ type: "text", text: withSchema }];
       if (o.image) content.unshift({ type: "image_url", image_url: { url: `data:${o.image.mime};base64,${o.image.data}` } });
-      const res = await openai.chat.completions.create({
+      const res = await traceGeneration("scan", o.ai, input, () => openai!.chat.completions.create({
         model: o.ai.model, response_format: { type: "json_object" }, max_completion_tokens: 32000,
         ...(reasons(o.ai.model) ? { reasoning_effort: "medium" as const } : {}),
         messages: [{ role: "system", content: o.system }, { role: "user", content }],
-      }, { signal: o.signal });
+      }, { signal: o.signal }), (r) => ({ model: r.model, usage: openaiUsage(r.usage), output: r.choices[0]?.message?.content }));
       if (res.choices[0]?.finish_reason === "length") throw new Error("the AI's reply was cut off");
       text = res.choices[0]?.message?.content ?? "";
       if (!text.trim()) throw new Error("OpenAI returned an empty reply");
@@ -46,18 +48,20 @@ export async function askJson(o: { ai: ModelChoice; system: string; prompt: stri
       claude ??= new Anthropic();
       const content: Anthropic.ContentBlockParam[] = [{ type: "text", text: withSchema }];
       if (o.image) content.unshift({ type: "image", source: { type: "base64", media_type: o.image.mime, data: o.image.data } });
-      const res = await claude.messages.create({ model: o.ai.model, max_tokens: 16000, system: o.system, messages: [{ role: "user", content }] }, { signal: o.signal });
+      const res = await traceGeneration("scan", o.ai, input,
+        () => claude!.messages.create({ model: o.ai.model, max_tokens: 16000, system: o.system, messages: [{ role: "user", content }] }, { signal: o.signal }),
+        (r) => ({ model: r.model, usage: claudeUsage(r.usage), output: r.content }));
       if (res.stop_reason === "max_tokens") throw new Error("the AI's reply was cut off");
       text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
     } else {
       gemini ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const parts = [...(o.image ? [{ inlineData: { mimeType: o.image.mime, data: o.image.data } }] : []), { text: o.prompt }];
-      const res = await gemini.models.generateContent({
+      const res = await traceGeneration("scan", o.ai, input, () => gemini!.models.generateContent({
         model: o.ai.model,
         contents: [{ role: "user", parts }],
         // Thinking tokens count toward the output limit, so leave plenty of room for the JSON.
         config: { systemInstruction: o.system, responseMimeType: "application/json", responseJsonSchema: o.schema, maxOutputTokens: 60000, abortSignal: o.signal },
-      });
+      }), (r) => ({ model: r.modelVersion, usage: geminiUsage(r), output: r.text }));
       text = res.text ?? "";
       const finish = res.candidates?.[0]?.finishReason;
       if (!text.trim()) throw new Error(res.promptFeedback?.blockReason ? `Gemini blocked the request (${res.promptFeedback.blockReason})` : `Gemini returned an empty reply (${finish ?? "no reason"})`);

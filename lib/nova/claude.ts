@@ -1,5 +1,6 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
+import { claudeUsage, traceGeneration } from "../telemetry";
 import { contextLine, executeTool, MAX_ROUNDS, OUT_OF_ROUNDS, PERSONA, TOOL_SPECS, type RunOptions } from "./tools";
 
 const TOOLS: Anthropic.Tool[] = TOOL_SPECS;
@@ -26,7 +27,9 @@ export async function runClaude(opts: RunOptions): Promise<void> {
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
     };
-    const response = (await client.beta.messages.create(params as any, { signal: opts.signal })) as unknown as Anthropic.Message;
+    const response = await traceGeneration("chat", opts.ai, messages.at(-1),
+      () => client!.beta.messages.create(params as any, { signal: opts.signal }) as unknown as Promise<Anthropic.Message>,
+      (r) => ({ model: r.model, usage: claudeUsage(r.usage), output: r.content }));
 
     for (const block of response.content) {
       if (block.type === "text" && block.text.trim()) emit({ type: "text", text: block.text });
