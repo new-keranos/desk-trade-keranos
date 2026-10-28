@@ -36,7 +36,7 @@ export type ScanRow = {
   verified?: boolean;
 };
 export type ScanEvent =
-  | { type: "status"; text: string; done?: number; total?: number }
+  | { type: "status"; text: string; done?: number; total?: number; phase?: "load" | "ai" }
   /** Sent first: where this page sits in the market, so the browser can carry on if the page fails later. */
   | { type: "page"; total: number; next?: number }
   /** Matches from one AI batch, sent as soon as the AI has read it. */
@@ -70,7 +70,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const loaded: Stock[] = [];
   let done = 0, skipped = 0, next = 0;
   const part = stocks.length > PAGE ? ` (${offset + 1}-${offset + list.length} of ${stocks.length})` : "";
-  emit({ type: "status", text: `Loading ${list.length} charts${part}`, done: 0, total: list.length });
+  emit({ type: "status", text: `Loading ${list.length} charts${part}`, done: 0, total: list.length, phase: "load" });
   const fetcher = async () => {
     while (next < list.length && !o.signal?.aborted) {
       const s = list[next++];
@@ -82,7 +82,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
         skipped++;
       }
       done++;
-      if (done % 4 === 0 || done === list.length) emit({ type: "status", text: `Loaded ${done} of ${list.length} charts`, done, total: list.length });
+      if (done % 4 === 0 || done === list.length) emit({ type: "status", text: `Loaded ${done} of ${list.length} charts`, done, total: list.length, phase: "load" });
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, fetcher));
@@ -115,7 +115,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   for (let k = 0; k < loaded.length; k += BATCH) batches.push(loaded.slice(k, k + BATCH));
   const verdicts: (Verdict & { verified?: boolean })[] = [];
   let read = 0, unread = 0, unreadLate = 0, nb = 0, failed = 0, reason = "";
-  emit({ type: "status", text: `AI is reading ${loaded.length} charts`, done: 0, total: loaded.length });
+  emit({ type: "status", text: `AI is reading ${loaded.length} charts`, done: 0, total: loaded.length, phase: "ai" });
   // 3. A second model double-checks each candidate with a picture of its chart. A rejected one is dropped;
   // if the check itself fails (rate limit, error), the first read is kept and shown as unverified.
   const verify = async (vs: Verdict[], batch: Stock[]): Promise<(Verdict & { verified?: boolean })[]> => {
@@ -147,7 +147,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
         } catch (err) {
           if (o.signal?.aborted) return;
           if (err instanceof AiBusy && attempt < 2 && Date.now() + BUSY_WAIT_MS < deadline) {
-            emit({ type: "status", text: "AI rate limit reached, waiting a moment", done: read, total: loaded.length });
+            emit({ type: "status", text: "AI rate limit reached, waiting a moment", done: read, total: loaded.length, phase: "ai" });
             await wait(BUSY_WAIT_MS, o.signal);
             continue;
           }
@@ -158,7 +158,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
         }
       }
       read += batch.length;
-      emit({ type: "status", text: `AI read ${read} of ${loaded.length} charts${o.verify ? " (and double-checked the matches)" : ""}`, done: read, total: loaded.length });
+      emit({ type: "status", text: `AI read ${read} of ${loaded.length} charts${o.verify ? " (and double-checked the matches)" : ""}`, done: read, total: loaded.length, phase: "ai" });
     }
   };
   await Promise.all(Array.from({ length: AI_CONCURRENCY }, reader));

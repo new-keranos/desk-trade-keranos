@@ -53,7 +53,7 @@ export function Thumbs({ hit }: { hit: PatternHit }) {
     </span>
   );
 }
-type Saved = Result & { id: string; at: string; universe: string; themes: string[]; length: string };
+type Saved = Result & { total?: number; id: string; at: string; universe: string; themes: string[]; length: string };
 
 const UNIVERSES: [string, string][] = [["SP500", "S&P 500"], ["NDX", "Nasdaq 100"], ["SET50", "SET50"], ["SET100", "SET100"]];
 const THEMES: [string, string][] = [["TECH", "Tech"], ["MEDICAL", "Medical"], ["FINANCE", "Finance"], ["ENERGY", "Energy"], ["FINTECH", "Fintech"]];
@@ -102,6 +102,17 @@ async function readImage(file: File): Promise<Img> {
 
 /** Stocks per scan request (matches lib/scan/run.ts PAGE) and the least time between requests. */
 const PAGE_SIZE = 40, PAGE_GAP_MS = 31_000;
+
+/** A page's own status, restated for the whole market: which part is running and how far the scan is overall. */
+function overall(ev: { text: string; done?: number; total?: number; phase?: "load" | "ai" }, offset: number, info: { total: number } | null) {
+  if (!info || info.total <= PAGE_SIZE) return ev;
+  const size = Math.min(PAGE_SIZE, info.total - offset), part = Math.floor(offset / PAGE_SIZE) + 1, parts = Math.ceil(info.total / PAGE_SIZE);
+  // Loading the charts is the quick fifth of a part; the AI reading them is the rest.
+  const f = ev.total ? (ev.done ?? 0) / ev.total : 0;
+  const within = ev.phase === "ai" ? 0.2 + 0.8 * f : ev.phase === "load" ? 0.2 * f : 0;
+  const what = ev.text.replace(/ \(\d+-\d+ of \d+\)$/, "");
+  return { text: `Part ${part} of ${parts} (stocks ${offset + 1}-${offset + size} of ${info.total}): ${what}`, done: Math.round(offset + size * within), total: info.total };
+}
 
 /** Rows from a page, replacing the same matches already shown while the page streamed. */
 const mergeRows = (have: Row[], add: Row[]) => [...have.filter((x) => !add.some((r) => (r.id ?? r.symbol) === (x.id ?? x.symbol))), ...add];
@@ -181,8 +192,8 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
         const started = Date.now();
         let failure = "";
         const page: Awaited<ReturnType<typeof scanPage>> = await scanPage({ ...body, offset }, signal, (ev) => {
-          if (ev.type === "page") info = { total: ev.total, next: ev.next };
-          else if (ev.type === "status") setStatus(ev);
+          if (ev.type === "page") { info = { total: ev.total, next: ev.next }; s.total = ev.total; }
+          else if (ev.type === "status") setStatus(overall(ev, offset!, info));
           else if (ev.type === "match") { s.rows.push(...ev.rows.filter((r: Row) => !s.rows.some((x) => (x.id ?? x.symbol) === (r.id ?? r.symbol)))); show(); }
           else if (ev.type === "error") failure = ev.message;
         }).catch((e) => { if ((e as Error).name === "AbortError") throw e; failure = (e as Error).message; return null; });
@@ -211,7 +222,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
           const parts = Math.ceil(pageInfo.total / PAGE_SIZE), part = Math.floor(offset / PAGE_SIZE) + 1;
           const left = PAGE_GAP_MS - (Date.now() - started);
           for (let t = left; t > 0 && !signal.aborted; t -= 1000) {
-            setStatus({ text: `${retried ? `Part ${part} failed, trying it again` : `Checked ${offset} of ${pageInfo.total} stocks`} · part ${part} of ${parts} starts in ${Math.ceil(t / 1000)} s (TradingView's per-minute limit)`, done: offset, total: pageInfo.total });
+            setStatus({ text: retried ? `Part ${part} of ${parts} failed, trying it again in ${Math.ceil(t / 1000)} s` : `Part ${part - 1} of ${parts} done (${offset} of ${pageInfo.total} stocks). Part ${part} starts in ${Math.ceil(t / 1000)} s (TradingView's per-minute limit)`, done: offset, total: pageInfo.total });
             await new Promise((ok) => setTimeout(ok, Math.min(1000, t)));
           }
           if (signal.aborted) throw new DOMException("Stopped", "AbortError");
@@ -302,7 +313,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
         <div className="scan-results">
           <div className="pane-h sub">
             <div><h2>{result.rows.length ? `${result.rows.length} matches · ${result.label}` : `No close matches · ${result.label}`}</h2>
-              <div className="muted" style={{ fontSize: 12 }}>{uniLabel(result.universe)} · {themeLabel(result.themes)} · {result.checked} charts checked · saved {fmtWhen(result.at)}</div></div>
+              <div className="muted" style={{ fontSize: 12 }}>{uniLabel(result.universe)} · {themeLabel(result.themes)} · {busy && result.total ? `${result.checked} of ${result.total} stocks checked so far` : `${result.checked} charts checked`} · saved {fmtWhen(result.at)}</div></div>
             {result.rows.length > 0 && <button type="button" className="btn" onClick={() => downloadCsv(result)}>Download CSV</button>}
           </div>
           {result.note && <div className="note">{result.note}</div>}
