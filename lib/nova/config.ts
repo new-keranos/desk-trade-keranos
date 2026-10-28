@@ -10,7 +10,7 @@ const PROVIDERS: Record<Provider, { name: string; key: string; env: string; fall
   gemini: { name: "Gemini", key: "GEMINI_API_KEY", env: "GEMINI_MODEL", fallback: "gemini-flash-latest",
     models: [["gemini-flash-latest", "Flash"], ["gemini-flash-lite-latest", "Flash-Lite"], ["gemini-pro-latest", "Pro"]] },
   openai: { name: "OpenAI", key: "OPENAI_API_KEY", env: "OPENAI_MODEL", fallback: "gpt-5.4-mini",
-    models: [["gpt-5.4-mini", "GPT-5.4 mini"], ["gpt-5.5", "GPT-5.5"]] },
+    models: [["gpt-5.4-mini", "GPT-5.4 mini"], ["gpt-5.5", "GPT-5.5"], ["gpt-6-luna", "GPT-6 Luna"], ["gpt-6.1-terra", "GPT-6.1 Terra"], ["gpt-6.1-sol", "GPT-6.1 Sol"]] },
   claude: { name: "Claude", key: "ANTHROPIC_API_KEY", env: "CLAUDE_MODEL", fallback: "claude-opus-5-5",
     models: [["claude-haiku-5-5", "Haiku 5.5"], ["claude-sonnet-5-5", "Sonnet 5.5"], ["claude-opus-5-5", "Opus 5.5"]] },
 };
