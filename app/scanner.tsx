@@ -6,7 +6,7 @@ import { currentModel, ModelSelect } from "./model";
 import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 
-type Row = { symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
+type Row = { id?: string; symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
   checks?: string[]; points?: { k: number; date: string; price: number; label?: string }[];
   lines?: { from: { date: string; price: number }; to: { date: string; price: number }; role: "upper" | "lower" | "level"; label: string; extend: boolean }[];
@@ -14,7 +14,9 @@ type Row = { symbol: string; name: string; description?: string; sector?: string
 type Img = { mime: "image/jpeg"; data: string; preview: string };
 type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string };
 /** A scanner match opened on the dashboard. */
-export type PatternHit = Row & { label: string; shape: number[] };
+export type PatternHit = Row & { id: string; label: string; shape: number[] };
+/** Scans saved before rows had ids get one from the symbol and start date. */
+const hitsOf = (res: Result): PatternHit[] => res.rows.map((r) => ({ ...r, id: r.id ?? `${r.symbol}@${r.from}`, label: res.label, shape: res.shape }));
 type Saved = Result & { id: string; at: string; universe: string; themes: string[]; length: string };
 
 const UNIVERSES: [string, string][] = [["SP500", "S&P 500"], ["NDX", "Nasdaq 100"], ["SET50", "SET50"], ["SET100", "SET100"]];
@@ -62,7 +64,7 @@ async function readImage(file: File): Promise<Img> {
   return { mime: "image/jpeg", data: url.slice(url.indexOf(",") + 1), preview: url };
 }
 
-export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) => void; hidden?: boolean }) {
+export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, same: PatternHit[]) => void; hidden?: boolean }) {
   const [pattern, setPattern] = useState<string>("double_bottom");
   const [img, setImg] = useState<Img | null>(null);
   const [universe, setUniverse] = useState("SET100");
@@ -216,10 +218,12 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
           {result.note && <div className="note">{result.note}</div>}
           {!result.rows.length && <div className="note">The AI wasn&apos;t at least 60% sure about any chart. Try another pattern length, market or theme.</div>}
           <ul className="hits">
-            {result.rows.map((r) => (
-              <li key={r.symbol}>
-                <button type="button" onClick={() => onOpen({ ...r, label: result.label, shape: result.shape })} aria-label={`Open ${r.symbol}, AI ${r.score}% sure`}>
-                  <span className="hit-t"><b>{r.name}</b><span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}<span className="hit-d">{r.description}</span></span>
+            {hitsOf(result).map((r, _i, all) => {
+              const same = all.filter((x) => x.symbol === r.symbol);
+              return (
+              <li key={r.id}>
+                <button type="button" onClick={() => onOpen(r, same)} aria-label={`Open ${r.symbol}, AI ${r.score}% sure`}>
+                  <span className="hit-t"><b>{r.name}</b>{same.length > 1 && <span className="stage">{same.indexOf(r) + 1} of {same.length}</span>}<span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}<span className="hit-d">{r.description}</span></span>
                   <span className="hit-score num">{r.score}%</span>
                   <MatchChart closes={r.closes} shape={result.shape} points={r.points} bars={r.bars} />
                   <span className="hit-meta">
@@ -234,7 +238,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit) 
                   </span>
                 </button>
               </li>
-            ))}
+            ); })}
           </ul>
           <p className="note">The % is the AI&apos;s confidence after reading the daily bars. It is a starting point for your own chart reading, not a confirmed setup or advice.</p>
         </div>

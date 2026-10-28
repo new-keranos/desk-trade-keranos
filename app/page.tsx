@@ -75,6 +75,8 @@ export default function Desk() {
   const [connect, setConnect] = useState<string | null>(null);
   const [view, setView] = useState<"desk" | "scanner">("desk");
   const [pattern, setPattern] = useState<PatternHit | null>(null);
+  // Every match the scan found on the same stock, so they can be shown one at a time.
+  const [patterns, setPatterns] = useState<PatternHit[]>([]);
 
   useEffect(() => {
     const err = new URLSearchParams(location.search).get("tv_error");
@@ -149,10 +151,10 @@ export default function Desk() {
         )}
         <div className="content">
           {/* The scanner stays mounted so a finished scan is still there after visiting the desk. */}
-          <Scanner hidden={view !== "scanner"} onOpen={(hit) => { setPattern(hit); open(hit.symbol); document.querySelector(".main")?.scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }} />
+          <Scanner hidden={view !== "scanner"} onOpen={(hit, same) => { setPattern(hit); setPatterns(same); open(hit.symbol); document.querySelector(".main")?.scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }} />
           {view === "desk" && (
             <Focus symbol={selected} quote={selected ? quotes[selected] : undefined}
-              pattern={pattern?.symbol === selected ? pattern : null} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")} />
+              pattern={pattern?.symbol === selected ? pattern : null} patterns={patterns} onPickPattern={setPattern} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")} />
           )}
         </div>
       </main>
@@ -231,8 +233,8 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
 // ---------- focus ----------
 const RANGES: [string, number, TvRange][] = [["1M", 22, "1M"], ["3M", 66, "3M"], ["6M", 126, "6M"], ["1Y", 252, "12M"]];
 
-function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbol: string | null; quote?: Quote;
-  pattern: PatternHit | null; onClearPattern: () => void; onBackToScan: () => void }) {
+function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern, onBackToScan }: { symbol: string | null; quote?: Quote;
+  pattern: PatternHit | null; patterns: PatternHit[]; onPickPattern: (p: PatternHit) => void; onClearPattern: () => void; onBackToScan: () => void }) {
   const [bars, setBars] = useState<Bars | null>(null);
   const [tech, setTech] = useState<Tech | null>(null);
   const [news, setNews] = useState<Headline[] | null>(null);
@@ -272,7 +274,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
 
   return (
     <section className="stack" aria-label="Selected symbol">
-      {pattern && symbol && <PatternPane p={pattern} onClear={onClearPattern} onBack={onBackToScan} />}
+      {pattern && symbol && <PatternPane p={pattern} all={patterns} onPick={onPickPattern} onClear={onClearPattern} onBack={onBackToScan} />}
       <div className="pane">
         <div className="focus-h">
           <div>
@@ -302,7 +304,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
           {mode === "tv" && symbol ? <TvChart symbol={symbol} range={pattern ? rangeSince(pattern.from) : undefined} />
             : err.chart ? <div className="note warn">{err.chart}</div>
             : !bars?.c?.length ? <div className="note">Loading chart…</div>
-            : mode === "candles" ? <Candles bars={bars} visible={range} overlay={pattern} />
+            : mode === "candles" ? <Candles key={pattern?.id ?? "plain"} bars={bars} visible={range} overlay={pattern} />
             : <Chart bars={{ t: bars.t.slice(-252), c: bars.c.slice(-252) } as Bars} range={range} highlight={pattern} />}
         </div>
         <dl className="stats" style={{ margin: 0 }}>
@@ -334,7 +336,7 @@ function Focus({ symbol, quote, pattern, onClearPattern, onBackToScan }: { symbo
 }
 
 /** The scanner match on the dashboard, with a button to have Agent check it. The AI's marks are drawn on the candles below. */
-function PatternPane({ p, onClear, onBack }: { p: PatternHit; onClear: () => void; onBack: () => void }) {
+function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: PatternHit[]; onPick: (p: PatternHit) => void; onClear: () => void; onBack: () => void }) {
   const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
     `analyze pattern ${p.symbol} ${p.label} ${p.from} ${p.to} (scanner AI: ${p.score}% sure, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
@@ -342,6 +344,9 @@ function PatternPane({ p, onClear, onBack }: { p: PatternHit; onClear: () => voi
     <div className="pane pattern-pane">
       <div className="pane-h">
         <div><h2>{p.label} · AI <span className="num">{p.score}%</span> sure{p.stage && <span className="stage">{p.stage}</span>}</h2>
+          {all.length > 1 && <div className="chips" role="group" aria-label="Matches on this stock" style={{ margin: "6px 0" }}>
+            {all.map((x, k) => <button key={x.id} type="button" className="chip" aria-pressed={x.id === p.id} onClick={() => onPick(x)}>
+              Match {k + 1} · {x.from} to {x.to} · <span className="num">{x.score}%</span></button>)}</div>}
           <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · the AI&apos;s points and lines are drawn on the chart below</div>
           {p.summary && <div className="hit-ai" style={{ marginTop: 6 }}>{p.summary}</div>}
           {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {c}</span>)}</div>}

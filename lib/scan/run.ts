@@ -20,6 +20,8 @@ const BUSY_WAIT_MS = 35_000;
 export type ScanPoint = { k: number; date: string; price: number; label?: string };
 export type ScanLine = { from: { date: string; price: number }; to: { date: string; price: number }; role: "upper" | "lower" | "level"; label: string; extend: boolean };
 export type ScanRow = {
+  /** Unique per match: one stock can hold the pattern more than once. */
+  id: string;
   symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
   /** The AI's confidence that this is the pattern, 0-100. */
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
@@ -107,12 +109,18 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   if (unread === loaded.length && loaded.length) throw new Error(failed ? `The AI couldn't read the charts: ${reason}.` : "AI rate limit reached. Wait a minute and try again.");
 
   const info = new Map(list.map((s) => [s.symbol, s]));
-  const rows: ScanRow[] = verdicts.filter((v) => v.confidence >= MIN_CONFIDENCE).map((v) => {
+  // One stock can match more than once; drop a match that mostly overlaps a stronger one for the same stock.
+  const kept: typeof verdicts = [];
+  for (const v of verdicts.filter((x) => x.confidence >= MIN_CONFIDENCE).sort((a, b) => b.confidence - a.confidence)) {
+    const dup = kept.some((k) => k.symbol === v.symbol && Math.min(k.end, v.end) - Math.max(k.start, v.start) > 0.6 * Math.min(k.end - k.start, v.end - v.start));
+    if (!dup) kept.push(v);
+  }
+  const rows: ScanRow[] = kept.map((v) => {
     const s = info.get(v.symbol)!, b = loaded.find((x) => x.symbol === v.symbol)!.bars;
     const win = b.c.slice(v.start, v.end + 1);
     const lo = Math.min(...b.l.slice(v.start, v.end + 1)), hi = Math.max(...b.h.slice(v.start, v.end + 1));
     const at = (k: number, price: number) => ({ date: day(b.t[k]), price });
-    return { symbol: s.symbol, name: s.name, description: s.description, sector: s.sector, close: s.close, change: s.change,
+    return { id: `${v.symbol}@${day(b.t[v.start])}`, symbol: s.symbol, name: s.name, description: s.description, sector: s.sector, close: s.close, change: s.change,
       score: v.confidence, bars: v.end - v.start + 1, from: day(b.t[v.start]), to: day(b.t[v.end]),
       heightPct: lo > 0 ? Math.round(((hi - lo) / lo) * 1000) / 10 : 0, closes: win.length > 96 ? resample(win, 96) : win,
       checks: v.evidence, points: v.points.map((p) => ({ k: p.k - v.start, date: day(b.t[p.k]), price: p.price, label: p.label })),

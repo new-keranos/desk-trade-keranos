@@ -49,6 +49,7 @@ For each match, mark what you used so it can be drawn on the chart:
 - evidence: 2 to 4 short Thai bullet points with the actual prices that make it this pattern.
 - summary: one Thai sentence on where price is now relative to the pattern.
 - breakout: the price that would confirm the pattern; invalidation: the price that would cancel it.
+Each result is one instance of the pattern. If a stock shows it more than once (e.g. two separate channels), return a separate result for each, at most 3, each with only its own points and lines. Never mix the marks of two instances in one result.
 Use real prices from the rows. For a stock with no match, give only symbol, match false and confidence.`;
 
 const Point = { type: "object", properties: { i: { type: "integer" }, price: { type: "number" }, label: { type: "string" } }, required: ["i", "price", "label"] };
