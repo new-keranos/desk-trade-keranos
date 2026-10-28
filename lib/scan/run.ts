@@ -8,8 +8,11 @@ import type { Template } from "./templates";
 import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "./universe";
 
 /** TradingView allows about 100 tool calls a minute, so one request checks a page of this many stocks (largest first)
- * and the browser asks for the next page a minute later until the whole market is done. */
-export const PAGE = 80;
+ * and the browser asks for the next page half a minute later until the whole market is done.
+ * Small pages also keep each request well inside the server's time limit. */
+export const PAGE = 40;
+/** Stop starting AI work this long into a request, so it returns its results before the 300 s limit cuts it off. */
+const BUDGET_MS = 230_000;
 const CONCURRENCY = 6;
 const BARS = 260;
 /** Stocks per AI request, and AI requests at once (the Gemini free tier allows only a few a minute). */
@@ -34,6 +37,8 @@ export type ScanRow = {
 };
 export type ScanEvent =
   | { type: "status"; text: string; done?: number; total?: number }
+  /** Sent first: where this page sits in the market, so the browser can carry on if the page fails later. */
+  | { type: "page"; total: number; next?: number }
   /** Matches from one AI batch, sent as soon as the AI has read it. */
   | { type: "match"; rows: ScanRow[] }
   | { type: "results"; rows: ScanRow[]; checked: number; skipped: number; note?: string; total: number; next?: number }
@@ -46,6 +51,7 @@ const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((ok) => { const id = setTimeout(ok, ms); signal?.addEventListener("abort", () => { clearTimeout(id); ok(); }, { once: true }); });
 
 export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Promise<Extract<ScanEvent, { type: "results" }>> {
+  const deadline = Date.now() + BUDGET_MS;
   const where = UNIVERSES[o.universe].label + (o.themes.length ? " · " + o.themes.map((t) => THEMES[t].label).join(", ") : "");
   emit({ type: "status", text: `Loading ${where} from TradingView` });
   const { stocks } = await loadUniverse(o.tv, o.universe, o.themes);
@@ -58,6 +64,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const list = stocks.slice(offset, offset + PAGE);
   const nextPage = offset + PAGE < stocks.length ? offset + PAGE : undefined;
   const notes: string[] = [];
+  emit({ type: "page", total: stocks.length, next: nextPage });
 
   // 1. Daily bars from TradingView.
   const loaded: Stock[] = [];
@@ -107,12 +114,13 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const batches: Stock[][] = [];
   for (let k = 0; k < loaded.length; k += BATCH) batches.push(loaded.slice(k, k + BATCH));
   const verdicts: (Verdict & { verified?: boolean })[] = [];
-  let read = 0, unread = 0, nb = 0, failed = 0, reason = "";
+  let read = 0, unread = 0, unreadLate = 0, nb = 0, failed = 0, reason = "";
   emit({ type: "status", text: `AI is reading ${loaded.length} charts`, done: 0, total: loaded.length });
   // 3. A second model double-checks each candidate with a picture of its chart. A rejected one is dropped;
   // if the check itself fails (rate limit, error), the first read is kept and shown as unverified.
   const verify = async (vs: Verdict[], batch: Stock[]): Promise<(Verdict & { verified?: boolean })[]> => {
     if (!o.verify) return vs;
+    if (Date.now() > deadline) return vs.map((v) => ({ ...v, verified: false }));
     const out = await Promise.all(vs.filter((v) => v.confidence >= MIN_CONFIDENCE).map(async (v) => {
       try {
         const r = await verifyMatch(batch.find((s) => s.symbol === v.symbol)!, v, { ...o, ai: o.verify! });
@@ -127,6 +135,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   };
   const reader = async () => {
     while (nb < batches.length && !o.signal?.aborted) {
+      if (Date.now() > deadline) { unreadLate += batches.slice(nb).reduce((n, b) => n + b.length, 0); nb = batches.length; break; }
       const batch = batches[nb++];
       for (let attempt = 0; ; attempt++) {
         try {
@@ -137,7 +146,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
           break;
         } catch (err) {
           if (o.signal?.aborted) return;
-          if (err instanceof AiBusy && attempt < 2) {
+          if (err instanceof AiBusy && attempt < 2 && Date.now() + BUSY_WAIT_MS < deadline) {
             emit({ type: "status", text: "AI rate limit reached, waiting a moment", done: read, total: loaded.length });
             await wait(BUSY_WAIT_MS, o.signal);
             continue;
@@ -153,8 +162,11 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
     }
   };
   await Promise.all(Array.from({ length: AI_CONCURRENCY }, reader));
-  if (unread) notes.push(`The AI couldn't read ${unread} charts (${reason || "rate limit"}). Scan again in a minute to include them.`);
-  if (unread === loaded.length && loaded.length) throw new Error(failed ? `The AI couldn't read the charts: ${reason}.` : "AI rate limit reached. Wait a minute and try again.");
+  unread += unreadLate;
+  if (unreadLate) notes.push(`${unreadLate} charts were left unread because the request ran out of time.`);
+  if (unread - unreadLate) notes.push(`The AI couldn't read ${unread - unreadLate} charts (${reason || "rate limit"}). Scan again in a minute to include them.`);
+  // On a market scanned in pages, a bad page is reported and the browser carries on with the next one.
+  if (unread === loaded.length && loaded.length && stocks.length <= PAGE) throw new Error(failed ? `The AI couldn't read the charts: ${reason}.` : "AI rate limit reached. Wait a minute and try again.");
 
   const rows = toRows(verdicts);
   rows.sort((a, b) => b.score - a.score);

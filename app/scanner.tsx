@@ -100,6 +100,9 @@ async function readImage(file: File): Promise<Img> {
   return { mime: "image/jpeg", data: url.slice(url.indexOf(",") + 1), preview: url };
 }
 
+/** Stocks per scan request (matches lib/scan/run.ts PAGE) and the least time between requests. */
+const PAGE_SIZE = 40, PAGE_GAP_MS = 31_000;
+
 /** Rows from a page, replacing the same matches already shown while the page streamed. */
 const mergeRows = (have: Row[], add: Row[]) => [...have.filter((x) => !add.some((r) => (r.id ?? r.symbol) === (x.id ?? x.symbol))), ...add];
 
@@ -173,24 +176,42 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
     const notes: string[] = [];
     const show = () => setResult({ ...s, rows: [...s.rows].sort((x, y) => y.score - x.score), note: notes.join(" ") || undefined });
     try {
+      let info: { total: number; next?: number } | null = null, retried = false;
       for (let offset: number | undefined = 0; offset != null;) {
         const started = Date.now();
-        const page = await scanPage({ ...body, offset }, signal, (ev) => {
-          if (ev.type === "status") setStatus(ev);
+        let failure = "";
+        const page: Awaited<ReturnType<typeof scanPage>> = await scanPage({ ...body, offset }, signal, (ev) => {
+          if (ev.type === "page") info = { total: ev.total, next: ev.next };
+          else if (ev.type === "status") setStatus(ev);
           else if (ev.type === "match") { s.rows.push(...ev.rows.filter((r: Row) => !s.rows.some((x) => (x.id ?? x.symbol) === (r.id ?? r.symbol)))); show(); }
-          else if (ev.type === "error") setError(ev.message);
-        });
-        if (!page) break;
-        s.checked += page.checked;
-        if (page.note) notes.push(page.note);
-        s.rows = mergeRows(s.rows, page.rows);
+          else if (ev.type === "error") failure = ev.message;
+        }).catch((e) => { if ((e as Error).name === "AbortError") throw e; failure = (e as Error).message; return null; });
+        const pageInfo = info as { total: number; next?: number } | null;
+        let next: number | undefined;
+        if (page) {
+          s.checked += page.checked;
+          if (page.note) notes.push(page.note);
+          s.rows = mergeRows(s.rows, page.rows);
+          next = page.next; retried = false;
+        } else if (pageInfo && pageInfo.total > PAGE_SIZE && !retried) {
+          // A page of a big market failed (time limit, AI error, network): try it once more, then move on.
+          retried = true; next = offset;
+        } else if (pageInfo && pageInfo.total > PAGE_SIZE) {
+          notes.push(`Stocks ${offset + 1}-${Math.min(offset + PAGE_SIZE, pageInfo.total)} were skipped${failure ? ` (${failure})` : ""}.`);
+          next = pageInfo.next; retried = false;
+        } else {
+          if (failure) setError(failure);
+          else if (!pageInfo) setError("The scan stopped before it started. Try again.");
+          break;
+        }
         show(); save({ ...s, note: notes.join(" ") || undefined });
-        offset = page.next;
-        // TradingView allows about 100 calls a minute, so pages start at least a minute apart.
-        if (offset != null) {
-          const left = 62_000 - (Date.now() - started);
+        offset = next;
+        // TradingView allows about 100 calls a minute, so pages start at least half a minute apart.
+        if (offset != null && pageInfo) {
+          const parts = Math.ceil(pageInfo.total / PAGE_SIZE), part = Math.floor(offset / PAGE_SIZE) + 1;
+          const left = PAGE_GAP_MS - (Date.now() - started);
           for (let t = left; t > 0 && !signal.aborted; t -= 1000) {
-            setStatus({ text: `Checked ${offset} of ${page.total} stocks · next ${Math.ceil(t / 1000)} s (TradingView's per-minute limit)`, done: offset, total: page.total });
+            setStatus({ text: `${retried ? `Part ${part} failed, trying it again` : `Checked ${offset} of ${pageInfo.total} stocks`} · part ${part} of ${parts} starts in ${Math.ceil(t / 1000)} s (TradingView's per-minute limit)`, done: offset, total: pageInfo.total });
             await new Promise((ok) => setTimeout(ok, Math.min(1000, t)));
           }
           if (signal.aborted) throw new DOMException("Stopped", "AbortError");
