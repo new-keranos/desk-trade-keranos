@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import type { ModelChoice } from "../nova/config";
+import { chartImage, type ChartRow } from "./chart";
 import { askJson, type RefImage } from "./llm";
 import type { Length } from "./match";
 import type { Template } from "./templates";
@@ -9,7 +10,9 @@ import type { Template } from "./templates";
 // No shape maths: the model looks at the numbers the way an analyst reads a chart, and marks the
 // turning points and lines it used, so the chart can show its reasoning.
 
-export type Bars = { t: number[]; h: number[]; l: number[]; c: number[] };
+export type Bars = { t: number[]; o?: number[]; h: number[]; l: number[]; c: number[]; v?: number[] };
+/** The user's verdict on an earlier match, shown to the AI as an example of what they count as this pattern. */
+export type Feedback = { symbol: string; good: boolean; note: string };
 export type Stock = { symbol: string; name: string; bars: Bars };
 
 /** How many daily bars the AI sees, and how many days each row it reads covers. */
@@ -40,7 +43,8 @@ const DEFINITIONS: Record<string, string> = {
 };
 
 const SYSTEM = `You are a senior technical analyst who reads daily price charts for chart patterns.
-You are given daily bars as rows "i,high,low,close" (i is the row number, oldest first) for several stocks.
+You are given daily bars as rows "i,high,low,close,vol" (i is the row number, oldest first; vol is the row's volume relative to the stock's average, 1.0 = normal) for several stocks.
+Each stock also has a "Swings" line: its swing highs (H) and lows (L) as row:price, found by code with a minimum move. Use them as the candidate turning points and check the pattern against their sequence; small wiggles between swings are noise. Use vol where the pattern needs it (volume drying up in a base, expanding on a breakout).
 Judge each stock on its own: does the requested pattern appear, finished recently or still forming at the latest bar? It must end within the last 15 rows.
 Be strict, like a professional: proportions matter (similar levels where the pattern needs them, real depth, enough touches on each line). Do not force a match; most stocks will not match.
 Before you answer for a stock, check every rule in the pattern definition against the actual rows. Set match true only if every rule holds; if any rule fails or is unclear, set match false. Confidence 80+ means a textbook example; 70-79 a clear but imperfect one.
@@ -105,19 +109,49 @@ export type Verdict = {
 
 const sig = (v: number) => Number(v.toPrecision(5));
 
+/** Minimum move for a swing, by pattern length. */
+const SWING_PCT: Record<Length, number> = { short: 4, medium: 6, long: 8 };
+
 /** Rows the AI reads: the last VIEW days, grouped `step` days per row. `idx[r]` is the last daily bar of row r. */
 export function rowsFor(b: Bars, length: Length) {
   const { days, step } = VIEW[length];
   const from = Math.max(0, b.c.length - days);
-  const lines: string[] = [], idx: number[] = [];
+  const avgV = b.v?.length ? b.v.slice(from).reduce((x, y) => x + y, 0) / (b.c.length - from) : 0;
+  const lines: string[] = [], idx: number[] = [], rows: ChartRow[] = [];
   for (let k = from; k < b.c.length; k += step) {
     const e = Math.min(b.c.length, k + step);
     const h = Math.max(...b.h.slice(k, e)), l = Math.min(...b.l.slice(k, e));
-    lines.push(`${idx.length},${sig(h)},${sig(l)},${sig(b.c[e - 1])}`);
+    const v = b.v?.length ? b.v.slice(k, e).reduce((x, y) => x + y, 0) : undefined;
+    const rel = v != null && avgV > 0 ? (v / (avgV * (e - k))).toFixed(1) : "";
+    lines.push(`${idx.length},${sig(h)},${sig(l)},${sig(b.c[e - 1])}${rel ? "," + rel : ""}`);
+    rows.push({ o: b.o?.[k] ?? b.c[Math.max(0, k - 1)], h, l, c: b.c[e - 1], v });
     idx.push(e - 1);
   }
-  return { text: lines.join("\n"), idx };
+  return { text: lines.join("\n"), idx, rows, swings: swingsOf(rows, SWING_PCT[length]) };
 }
+
+/** Zigzag swing points over the rows: a high or low that price then moved away from by at least pct %. */
+export function swingsOf(rows: ChartRow[], pct: number) {
+  const out: { i: number; kind: "H" | "L"; price: number }[] = [];
+  if (!rows.length) return out;
+  let dir: 0 | 1 | -1 = 0, hiI = 0, loI = 0;
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i].h > rows[hiI].h) hiI = i;
+    if (rows[i].l < rows[loI].l) loI = i;
+    if (dir >= 0 && rows[i].l <= rows[hiI].h * (1 - pct / 100) && hiI < i) {
+      if (dir === 0 && loI < hiI) out.push({ i: loI, kind: "L", price: rows[loI].l });
+      out.push({ i: hiI, kind: "H", price: rows[hiI].h }); dir = -1; loI = i;
+    } else if (dir <= 0 && rows[i].h >= rows[loI].l * (1 + pct / 100) && loI < i) {
+      if (dir === 0 && hiI < loI) out.push({ i: hiI, kind: "H", price: rows[hiI].h });
+      out.push({ i: loI, kind: "L", price: rows[loI].l }); dir = 1; hiI = i;
+    }
+  }
+  // The leg still running at the latest bar.
+  if (dir === 1) out.push({ i: hiI, kind: "H", price: rows[hiI].h });
+  if (dir === -1) out.push({ i: loI, kind: "L", price: rows[loI].l });
+  return out;
+}
+const swingText = (sw: ReturnType<typeof swingsOf>) => sw.map((p) => `${p.i}:${p.kind} ${sig(p.price)}`).join(", ") || "none";
 
 /** Move a point to the nearby daily bar whose high or low is closest to the AI's price, so marks sit on real candles. */
 function snap(b: Bars, k: number, price: number, radius: number) {
@@ -136,20 +170,51 @@ export function patternBrief(template?: Template) {
   return template ? `Pattern: ${DEFINITIONS[template.id] ?? template.name}` : "Pattern: the chart pattern in the attached reference image. Judge by the pattern's structure (its sequence of highs, lows and lines), not by its exact size or length.";
 }
 
+export type JudgeOptions = { ai: ModelChoice; template?: Template; image?: RefImage; length: Length; feedback?: Feedback[]; signal?: AbortSignal };
+type View = { s: Stock } & ReturnType<typeof rowsFor>;
+
+/** The user's thumbs up and down on earlier matches of this pattern, so the AI learns what they count as one. */
+function feedbackBrief(f?: Feedback[]) {
+  if (!f?.length) return "";
+  const good = f.filter((x) => x.good), bad = f.filter((x) => !x.good);
+  return `\n\nThe user reviewed earlier matches of this pattern. Match their judgement.${good.length ? `\nThey agreed with:\n${good.map((x) => `- ${x.symbol}: ${x.note}`).join("\n")}` : ""}${bad.length ? `\nThey said these were NOT the pattern, so do not match charts like them:\n${bad.map((x) => `- ${x.symbol}: ${x.note}`).join("\n")}` : ""}`;
+}
+const stockBlock = (v: View) => `### ${v.s.symbol} (${v.s.name}), ${v.idx.length} rows, last row = latest bar\nSwings: ${swingText(v.swings)}\n${v.text}`;
+const rowNote = (step: number) => `Each row covers ${step === 1 ? "one trading day" : `${step} trading days`}.`;
+
 /** Ask the AI about one batch of stocks. Returns verdicts for the matches only. */
-export async function judgeBatch(stocks: Stock[], o: { ai: ModelChoice; template?: Template; image?: RefImage; length: Length; signal?: AbortSignal }): Promise<Verdict[]> {
+export async function judgeBatch(stocks: Stock[], o: JudgeOptions): Promise<Verdict[]> {
   const views = stocks.map((s) => ({ s, ...rowsFor(s.bars, o.length) }));
   const step = VIEW[o.length].step;
-  const prompt = `${patternBrief(o.template)}
-Each row covers ${step === 1 ? "one trading day" : `${step} trading days`}.
-
-${views.map((v) => `### ${v.s.symbol} (${v.s.name}), ${v.idx.length} rows, last row = latest bar\n${v.text}`).join("\n\n")}`;
-  const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, image: o.image, schema: SCHEMA, signal: o.signal,
+  const prompt = `${patternBrief(o.template)}${feedbackBrief(o.feedback)}\n${rowNote(step)}\n\n${views.map(stockBlock).join("\n\n")}`;
+  const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, images: o.image ? [o.image] : [], schema: SCHEMA, signal: o.signal,
     label: `${o.template?.name ?? "image pattern"} · ${stocks.map((s) => s.symbol).join(", ")}` }));
+  return toVerdicts(raw, views, step);
+}
 
+/** Second opinion on one match: a (possibly stronger) model sees the rows and a picture of the chart, and confirms or rejects it. */
+export async function verifyMatch(stock: Stock, first: Verdict, o: JudgeOptions): Promise<Verdict | null> {
+  const view = { s: stock, ...rowsFor(stock.bars, o.length) };
+  const step = VIEW[o.length].step;
+  const row = (k: number) => { const r = view.idx.findIndex((x) => x >= k); return r < 0 ? view.idx.length - 1 : r; };
+  const marks = [...first.points.map((p) => `${p.label || "point"} at row ${row(p.k)} ${sig(p.price)}`),
+    ...first.lines.map((l) => `${l.label || l.role} line row ${row(l.k1)} ${sig(l.p1)} to row ${row(l.k2)} ${sig(l.p2)}`)].join("; ");
+  const prompt = `${patternBrief(o.template)}${feedbackBrief(o.feedback)}
+${rowNote(step)}
+A first reader flagged ${stock.symbol} as this pattern (${first.confidence}% sure), marking: ${marks}.
+Verify it independently, as a strict senior reviewer. ${o.image ? "The first image is the reference pattern; the last image" : "The image"} is this stock's chart drawn from the same rows: one candle per row, the rightmost candle is the last row, faint vertical lines every 10 rows and darker ones every 50 rows (row 0 is the leftmost darker line), volume along the bottom.
+If it really is the pattern, return one result with match true, your own confidence and corrected points and lines (row numbers and prices from the rows). If not, return match false.
+
+${stockBlock(view)}`;
+  const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, images: [...(o.image ? [o.image] : []), chartImage(view.rows)], schema: SCHEMA, signal: o.signal,
+    label: `verify ${o.template?.name ?? "image pattern"} · ${stock.symbol}` }));
+  return toVerdicts(raw, [view], step)[0] ?? null;
+}
+
+function toVerdicts(raw: z.infer<typeof Reply>, views: View[], step: number): Verdict[] {
   const out: Verdict[] = [];
   for (const r of raw.results) {
-    const v = views.find((x) => x.s.symbol === r.symbol || x.s.symbol.endsWith(":" + r.symbol));
+    const v = views.find((x) => x.s.symbol === r.symbol || x.s.symbol.endsWith(":" + r.symbol)) ?? (views.length === 1 ? views[0] : undefined);
     if (!v || !r.match || !r.points.length) continue;
     const at = (i: number) => v.idx[Math.max(0, Math.min(v.idx.length - 1, i))];
     const b = v.s.bars, rad = step + 2;

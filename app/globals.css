@@ -267,3 +267,11 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .saved-x { border: 0; background: none; padding: 0 12px; font-size: 18px; color: var(--faint); border-radius: var(--r-sm); }
 .saved-x:hover { color: var(--down); }
 .hit-checks { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11px; color: var(--up); margin-top: 2px; }
+.hits li.hit { display: flex; align-items: center; }
+.hits li.hit > button { flex: 1; min-width: 0; }
+.thumbs { display: inline-flex; gap: 4px; padding: 0 12px 0 0; }
+.thumbs button { border: 1px solid var(--line); background: none; border-radius: 999px; padding: 3px 8px; font-size: 13px; line-height: 1; filter: grayscale(1); opacity: .65; }
+.thumbs button:hover { background: var(--raised); opacity: 1; }
+.thumbs button[aria-pressed="true"] { filter: none; opacity: 1; border-color: var(--accent); background: var(--raised); }
+.stage.ok { color: var(--up); border-color: currentColor; }
+.hits .thumbs button { width: auto; display: inline-block; padding: 3px 8px; }

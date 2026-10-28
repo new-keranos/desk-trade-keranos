@@ -157,7 +157,7 @@ const defs: ToolDef[] = [
     run: async (i, emit, ctx) => {
       const t = templateById(i.pattern);
       if (!t) throw new Error(`Unknown pattern. Use one of: ${TEMPLATES.map((x) => x.id).join(", ")}`);
-      const r = await runScan({ ai: ctx.ai, tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", template: t, limit: 10 },
+      const r = await runScan({ ai: ctx.ai, verify: ctx.ai, tv: ctx.tv, universe: i.universe, themes: i.themes ?? [], length: i.length ?? "medium", template: t, limit: 10 },
         // Each match shows in the chat as soon as the AI finds it.
         (e) => { if (e.type === "match") for (const m of e.rows) emit({ type: "step", text: `Found ${m.name}: ${t.name}, AI ${m.score}% sure` }); });
       return { pattern: t.name, bias: t.bias, checked: r.checked, note: r.next ? `${r.note ?? ""} Checked the ${r.checked} largest of ${r.total} stocks; the Pattern scanner page checks them all.`.trim() : r.note, matches: r.rows.map(({ closes: _c, points: _p, lines: _l, ...row }) => row) };

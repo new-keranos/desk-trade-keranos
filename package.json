@@ -18,6 +18,7 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
     "@opentelemetry/otlp-exporter-base": "^0.223.0",
     "@opentelemetry/sdk-trace-node": "^2.12.0",
+    "@resvg/resvg-js": "^2.6.2",
     "lightweight-charts": "4.2.3",
     "next": "15.5.28",
     "openai": "^7.45.0",

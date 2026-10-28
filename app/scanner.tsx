@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { cls, fmtPct, fmtPx, market } from "./format";
-import { currentModel, ModelSelect } from "./model";
+import { currentModel, currentVerify, ModelSelect, VerifySelect } from "./model";
 import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 
@@ -10,13 +10,49 @@ type Row = { id?: string; symbol: string; name: string; description?: string; se
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
   checks?: string[]; points?: { k: number; date: string; price: number; label?: string }[];
   lines?: { from: { date: string; price: number }; to: { date: string; price: number }; role: "upper" | "lower" | "level"; label: string; extend: boolean }[];
-  stage?: string; summary?: string; breakout?: number; invalidation?: number };
+  stage?: string; summary?: string; breakout?: number; invalidation?: number; verified?: boolean };
 type Img = { mime: "image/jpeg"; data: string; preview: string };
-type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string };
+type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string; pattern?: string };
 /** A scanner match opened on the dashboard. */
-export type PatternHit = Row & { id: string; label: string; shape: number[] };
+export type PatternHit = Row & { id: string; label: string; shape: number[]; pattern: string };
 /** Scans saved before rows had ids get one from the symbol and start date. */
-const hitsOf = (res: Result): PatternHit[] => res.rows.map((r) => ({ ...r, id: r.id ?? `${r.symbol}@${r.from}`, label: res.label, shape: res.shape }));
+const hitsOf = (res: Result): PatternHit[] => res.rows.map((r) => ({ ...r, id: r.id ?? `${r.symbol}@${r.from}`, label: res.label, shape: res.shape,
+  pattern: res.pattern ?? TEMPLATES.find((t) => t.name === res.label)?.id ?? "image" }));
+
+// 👍/👎 on matches, kept in this browser and sent with later scans of the same pattern so the AI learns what the user counts as one.
+type Vote = { id: string; pattern: string; symbol: string; good: boolean; note: string; at: string };
+const VOTES = "keranos.feedback.v1", VOTES_EVENT = "keranos:feedback", MAX_VOTES = 200;
+const loadVotes = (): Vote[] => { try { const v = JSON.parse(localStorage.getItem(VOTES) ?? "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
+function vote(hit: PatternHit, good: boolean | null) {
+  const rest = loadVotes().filter((v) => v.id !== hit.id || v.pattern !== hit.pattern);
+  const marks = (hit.points ?? []).map((p) => `${p.label || "point"} ${p.price} (${p.date})`).join(", ");
+  const note = `${hit.stage ?? "stage?"}, ${hit.from} to ${hit.to}, ${hit.bars} days, height ${hit.heightPct}%; marks: ${marks}${hit.summary ? `; AI said: ${hit.summary}` : ""}`.slice(0, 600);
+  const next = good == null ? rest : [{ id: hit.id, pattern: hit.pattern, symbol: hit.symbol, good, note, at: new Date().toISOString() }, ...rest].slice(0, MAX_VOTES);
+  try { localStorage.setItem(VOTES, JSON.stringify(next)); } catch { /* blocked storage */ }
+  window.dispatchEvent(new Event(VOTES_EVENT));
+}
+/** The latest 6 agreements and 6 rejections for a pattern, for the scan request. */
+const feedbackFor = (pattern: string) => {
+  const v = loadVotes().filter((x) => x.pattern === pattern);
+  return [...v.filter((x) => x.good).slice(0, 6), ...v.filter((x) => !x.good).slice(0, 6)].map(({ symbol, good, note }) => ({ symbol, good, note }));
+};
+
+/** Thumbs up / down for one match. Pressing the same thumb again clears the vote. */
+export function Thumbs({ hit }: { hit: PatternHit }) {
+  const [mine, setMine] = useState<boolean | null>(null);
+  useEffect(() => {
+    const sync = () => setMine(loadVotes().find((v) => v.id === hit.id && v.pattern === hit.pattern)?.good ?? null);
+    sync();
+    window.addEventListener(VOTES_EVENT, sync);
+    return () => window.removeEventListener(VOTES_EVENT, sync);
+  }, [hit.id, hit.pattern]);
+  return (
+    <span className="thumbs" role="group" aria-label="Is this the pattern?">
+      <button type="button" aria-pressed={mine === true} title="Correct: show the AI more like this" onClick={() => vote(hit, mine === true ? null : true)}>👍</button>
+      <button type="button" aria-pressed={mine === false} title="Wrong: the AI will avoid charts like this" onClick={() => vote(hit, mine === false ? null : false)}>👎</button>
+    </span>
+  );
+}
 type Saved = Result & { id: string; at: string; universe: string; themes: string[]; length: string };
 
 const UNIVERSES: [string, string][] = [["SP500", "S&P 500"], ["NDX", "Nasdaq 100"], ["SET50", "SET50"], ["SET100", "SET100"]];
@@ -131,9 +167,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
     const label = t?.name ?? "Your image pattern";
     ctl.current = new AbortController();
     const signal = ctl.current.signal;
-    const body = { ai: currentModel(), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
+    const body = { ai: currentModel(), verify: currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
     // One saved scan grows as matches arrive, page after page.
-    const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: [], checked: 0, shape, label };
+    const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: [], checked: 0, shape, label, pattern: usingImage ? "image" : pattern };
     const notes: string[] = [];
     const show = () => setResult({ ...s, rows: [...s.rows].sort((x, y) => y.score - x.score), note: notes.join(" ") || undefined });
     try {
@@ -230,6 +266,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
         {busy ? <button className="btn" type="button" onClick={() => ctl.current?.abort()}>Stop</button>
           : <button className="btn primary" type="button" onClick={scan}>Scan</button>}
         {!busy && <ModelSelect className="scan-model" />}
+        {!busy && <VerifySelect className="scan-model" />}
         {status && (
           <div className="scan-status" role="status">
             <span>{status.text}</span>
@@ -253,9 +290,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
             {hitsOf(result).map((r, _i, all) => {
               const same = all.filter((x) => x.symbol === r.symbol);
               return (
-              <li key={r.id}>
+              <li key={r.id} className="hit">
                 <button type="button" onClick={() => onOpen(r, same)} aria-label={`Open ${r.symbol}, AI ${r.score}% sure`}>
-                  <span className="hit-t"><b>{r.name}</b>{same.length > 1 && <span className="stage">{same.indexOf(r) + 1} of {same.length}</span>}<span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}<span className="hit-d">{r.description}</span></span>
+                  <span className="hit-t"><b>{r.name}</b>{same.length > 1 && <span className="stage">{same.indexOf(r) + 1} of {same.length}</span>}<span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}{r.verified === true && <span className="stage ok" title="A second AI pass looked at the chart picture and confirmed it">✓ checked</span>}{r.verified === false && <span className="stage" title="The second check couldn't run, so this is the first read only">unchecked</span>}<span className="hit-d">{r.description}</span></span>
                   <span className="hit-score num">{r.score}%</span>
                   <MatchChart closes={r.closes} shape={result.shape} points={r.points} bars={r.bars} />
                   <span className="hit-meta">
@@ -269,6 +306,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
                       {r.invalidation != null && <span className="muted">Invalid past {fmtPx(r.invalidation)}</span>}</span>}
                   </span>
                 </button>
+                <Thumbs hit={r} />
               </li>
             ); })}
           </ul>

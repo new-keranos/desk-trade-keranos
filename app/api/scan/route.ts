@@ -10,12 +10,17 @@ import { openTv, originOf, TvAuthError } from "@/lib/tradingview";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+const AiChoice = z.object({ provider: z.enum(["gemini", "claude", "openai"]), model: z.string().max(80) });
+
 const Body = z.object({
   universe: z.enum(Object.keys(UNIVERSES) as [UniverseId, ...UniverseId[]]),
   themes: z.array(z.enum(Object.keys(THEMES) as [ThemeId, ...ThemeId[]])).max(5).default([]),
   length: z.enum(["short", "medium", "long"]).default("medium"),
   offset: z.number().int().min(0).max(5000).default(0),
-  ai: z.object({ provider: z.enum(["gemini", "claude", "openai"]), model: z.string().max(80) }).optional(),
+  ai: AiChoice.optional(),
+  /** A model for the second check, or null to skip it. */
+  verify: AiChoice.nullable().optional(),
+  feedback: z.array(z.object({ symbol: z.string().max(64), good: z.boolean(), note: z.string().max(600) })).max(12).optional(),
   pattern: z.union([
     z.object({ template: z.string().max(40) }),
     // The browser downsizes images first; about 1.5 MB of base64 is plenty for a pattern.
@@ -28,6 +33,8 @@ export async function POST(req: Request) {
   if (!parsed.success) return Response.json({ error: "Bad request" }, { status: 400 });
   const { universe, themes, length, pattern, offset } = parsed.data;
   const ai = resolveChoice(parsed.data.ai);
+  const verify = parsed.data.verify ? resolveChoice(parsed.data.verify) : undefined;
+  const feedback = parsed.data.feedback;
   const template = "template" in pattern ? templateById(pattern.template) : undefined;
   if ("template" in pattern && !template) return Response.json({ error: "Unknown pattern" }, { status: 400 });
 
@@ -46,8 +53,8 @@ export async function POST(req: Request) {
       const emit = (e: ScanEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       try {
         const image = "image" in pattern ? pattern.image : undefined;
-        await traceRequest("scan", ai, { universe, themes, length, offset, pattern: template?.name ?? "image" },
-          () => runScan({ ai, tv: tv.call, universe, themes, length, template, image, offset, signal: req.signal }, emit));
+        await traceRequest("scan", ai, { universe, themes, length, offset, verify: verify?.model ?? "off", feedback: feedback?.length ?? 0, pattern: template?.name ?? "image" },
+          () => runScan({ ai, verify, feedback, tv: tv.call, universe, themes, length, template, image, offset, signal: req.signal }, emit));
       } catch (err) {
         let message = "The scan was interrupted. Try again.";
         if (err instanceof Error && /TradingView|AI /.test(err.message)) message = err.message;

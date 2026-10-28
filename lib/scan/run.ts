@@ -1,7 +1,7 @@
 import "server-only";
 import type { ModelChoice } from "../nova/config";
 import { TV, type TvCaller } from "../tradingview";
-import { judgeBatch, type Bars, type Stock, type Verdict } from "./judge";
+import { judgeBatch, verifyMatch, type Bars, type Feedback, type Stock, type Verdict } from "./judge";
 import { AiBusy, aiReason, type RefImage } from "./llm";
 import { resample, type Length } from "./match";
 import type { Template } from "./templates";
@@ -29,6 +29,8 @@ export type ScanRow = {
   /** The AI's evidence, the turning points (k = bar offset inside the pattern) and lines it marked. */
   checks: string[]; points: ScanPoint[]; lines: ScanLine[];
   stage?: string; summary?: string; breakout?: number; invalidation?: number;
+  /** true: a second model confirmed it; false: the check couldn't run, so this is the first read only. */
+  verified?: boolean;
 };
 export type ScanEvent =
   | { type: "status"; text: string; done?: number; total?: number }
@@ -38,7 +40,7 @@ export type ScanEvent =
   | { type: "error"; message: string }
   | { type: "done" };
 
-export type ScanOptions = { ai: ModelChoice; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; offset?: number; signal?: AbortSignal };
+export type ScanOptions = { ai: ModelChoice; verify?: ModelChoice; feedback?: Feedback[]; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; offset?: number; signal?: AbortSignal };
 
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((ok) => { const id = setTimeout(ok, ms); signal?.addEventListener("abort", () => { clearTimeout(id); ok(); }, { once: true }); });
@@ -68,7 +70,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
       try {
         const p = (await o.tv(TV.ohlcv, { symbol: s.symbol, interval: "1D", count: BARS, format: "columns" })) as { bars?: Bars };
         const b = p?.bars;
-        if (b?.c?.length && b.c.length >= 30) loaded.push({ symbol: s.symbol, name: s.name, bars: { t: b.t, h: b.h, l: b.l, c: b.c } });
+        if (b?.c?.length && b.c.length >= 30) loaded.push({ symbol: s.symbol, name: s.name, bars: { t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v } });
       } catch {
         skipped++;
       }
@@ -81,8 +83,8 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
 
   // AI verdicts to result rows. One stock can match more than once; a match that mostly overlaps a stronger one for the same stock is dropped.
   const info = new Map(list.map((s) => [s.symbol, s]));
-  const toRows = (vs: Verdict[]): ScanRow[] => {
-    const kept: Verdict[] = [];
+  const toRows = (vs: (Verdict & { verified?: boolean })[]): ScanRow[] => {
+    const kept: typeof vs = [];
     for (const v of vs.filter((x) => x.confidence >= MIN_CONFIDENCE).sort((a, b) => b.confidence - a.confidence)) {
       const dup = kept.some((k) => k.symbol === v.symbol && Math.min(k.end, v.end) - Math.max(k.start, v.start) > 0.6 * Math.min(k.end - k.start, v.end - v.start));
       if (!dup) kept.push(v);
@@ -97,22 +99,38 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
         heightPct: lo > 0 ? Math.round(((hi - lo) / lo) * 1000) / 10 : 0, closes: win.length > 96 ? resample(win, 96) : win,
         checks: v.evidence, points: v.points.map((p) => ({ k: p.k - v.start, date: day(b.t[p.k]), price: p.price, label: p.label })),
         lines: v.lines.map((l) => ({ from: at(l.k1, l.p1), to: at(l.k2, l.p2), role: l.role, label: l.label, extend: l.extend })),
-        stage: v.stage, summary: v.summary, breakout: v.breakout, invalidation: v.invalidation };
+        stage: v.stage, summary: v.summary, breakout: v.breakout, invalidation: v.invalidation, verified: v.verified };
     });
   };
 
   // 2. The AI reads the charts in batches and judges each one against the pattern.
   const batches: Stock[][] = [];
   for (let k = 0; k < loaded.length; k += BATCH) batches.push(loaded.slice(k, k + BATCH));
-  const verdicts: Verdict[] = [];
+  const verdicts: (Verdict & { verified?: boolean })[] = [];
   let read = 0, unread = 0, nb = 0, failed = 0, reason = "";
   emit({ type: "status", text: `AI is reading ${loaded.length} charts`, done: 0, total: loaded.length });
+  // 3. A second model double-checks each candidate with a picture of its chart. A rejected one is dropped;
+  // if the check itself fails (rate limit, error), the first read is kept and shown as unverified.
+  const verify = async (vs: Verdict[], batch: Stock[]): Promise<(Verdict & { verified?: boolean })[]> => {
+    if (!o.verify) return vs;
+    const out = await Promise.all(vs.filter((v) => v.confidence >= MIN_CONFIDENCE).map(async (v) => {
+      try {
+        const r = await verifyMatch(batch.find((s) => s.symbol === v.symbol)!, v, { ...o, ai: o.verify! });
+        return r && r.confidence >= MIN_CONFIDENCE ? { ...r, verified: true } : null;
+      } catch (err) {
+        if (o.signal?.aborted) return null;
+        console.error("scan: verify failed", err);
+        return { ...v, verified: false };
+      }
+    }));
+    return out.filter((v) => v != null);
+  };
   const reader = async () => {
     while (nb < batches.length && !o.signal?.aborted) {
       const batch = batches[nb++];
       for (let attempt = 0; ; attempt++) {
         try {
-          const got = await judgeBatch(batch, o);
+          const got = await verify(await judgeBatch(batch, o), batch);
           verdicts.push(...got);
           const rows = toRows(got);
           if (rows.length) emit({ type: "match", rows });
@@ -131,7 +149,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
         }
       }
       read += batch.length;
-      emit({ type: "status", text: `AI read ${read} of ${loaded.length} charts`, done: read, total: loaded.length });
+      emit({ type: "status", text: `AI read ${read} of ${loaded.length} charts${o.verify ? " (and double-checked the matches)" : ""}`, done: read, total: loaded.length });
     }
   };
   await Promise.all(Array.from({ length: AI_CONCURRENCY }, reader));

@@ -49,3 +49,32 @@ export function ModelSelect({ className }: { className?: string }) {
     </select>
   );
 }
+
+// The second check: off, the same model as the scan, or any other model.
+const VERIFY_STORE = "keranos.verify.v1";
+const readVerify = (): string => { try { return localStorage.getItem(VERIFY_STORE) ?? "same"; } catch { return "same"; } };
+
+/** The model that double-checks scan matches, or null when the check is off. */
+export function currentVerify(): Choice | null {
+  const v = readVerify();
+  if (v === "off") return null;
+  if (v === "same") return currentModel() ?? cache?.default ?? null;
+  const [provider, ...rest] = v.split("|");
+  return { provider: provider as Choice["provider"], model: rest.join("|") };
+}
+
+export function VerifySelect({ className }: { className?: string }) {
+  const { models } = useModel();
+  const [value, setValue] = useState("same");
+  useEffect(() => setValue(readVerify()), []);
+  if (!models.length) return null;
+  const pick = (v: string) => { setValue(v); try { localStorage.setItem(VERIFY_STORE, v); } catch { /* this tab only */ } };
+  return (
+    <select className={className} value={value} aria-label="Double-check matches with" title="A second AI pass that looks at a picture of each matched chart and confirms or rejects it"
+      onChange={(e) => pick(e.target.value)}>
+      <option value="same">Double-check: same model</option>
+      {models.map((m) => <option key={`${m.provider}|${m.model}`} value={`${m.provider}|${m.model}`}>Double-check: {m.label}</option>)}
+      <option value="off">Double-check: off</option>
+    </select>
+  );
+}

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
-import Scanner, { type PatternHit } from "./scanner";
+import Scanner, { Thumbs, type PatternHit } from "./scanner";
 import Candles, { type Ohlcv } from "./candles";
 import { currentModel, ModelSelect } from "./model";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
@@ -343,7 +343,7 @@ function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: 
   return (
     <div className="pane pattern-pane">
       <div className="pane-h">
-        <div><h2>{p.label} · AI <span className="num">{p.score}%</span> sure{p.stage && <span className="stage">{p.stage}</span>}</h2>
+        <div><h2>{p.label} · AI <span className="num">{p.score}%</span> sure{p.stage && <span className="stage">{p.stage}</span>}{p.verified === true && <span className="stage ok">✓ checked</span>}</h2>
           {all.length > 1 && <div className="chips" role="group" aria-label="Matches on this stock" style={{ margin: "6px 0" }}>
             {all.map((x, k) => <button key={x.id} type="button" className="chip" aria-pressed={x.id === p.id} onClick={() => onPick(x)}>
               Match {k + 1} · {x.from} to {x.to} · <span className="num">{x.score}%</span></button>)}</div>}
@@ -354,6 +354,7 @@ function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: 
             {p.breakout != null && <span>Breakout level <b>{fmtPx(p.breakout)}</b></span>}
             {p.invalidation != null && <span className="muted">Invalid past {fmtPx(p.invalidation)}</span>}</div>}</div>
         <div className="row">
+          <Thumbs hit={p} />
           <button className="btn primary" type="button" onClick={ask}>Analyze with Agent</button>
           <button className="btn" type="button" onClick={onBack}>Back to scan</button>
           <button className="btn" type="button" onClick={onClear} aria-label="Hide pattern">×</button>
