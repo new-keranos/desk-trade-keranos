@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cls, fmtPct, fmtPx, market } from "./format";
 import { currentModel, currentVerify, ModelSelect, VerifySelect } from "./model";
+import { blockedText, blockTv, tvBlocked } from "./tvblock";
 import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 
@@ -101,7 +102,10 @@ async function readImage(file: File): Promise<Img> {
 }
 
 /** Stocks per scan request (matches lib/scan/run.ts PAGE) and the least time between requests. */
-const PAGE_SIZE = 40, PAGE_GAP_MS = 31_000;
+const PAGE_SIZE = 40, PAGE_GAP_MS = 60_000;
+
+/** TradingView refused the account; the scan must stop, not retry. */
+class StopScan extends Error {}
 
 /** A page's own status, restated for the whole market: which part is running and how far the scan is overall. */
 function overall(ev: { text: string; done?: number; total?: number; phase?: "load" | "ai" }, offset: number, info: { total: number } | null) {
@@ -121,6 +125,11 @@ const mergeRows = (have: Row[], add: Row[]) => [...have.filter((x) => !add.some(
 async function scanPage(body: object, signal: AbortSignal, on: (ev: any) => void): Promise<{ rows: Row[]; checked: number; note?: string; total: number; next?: number } | null> {
   const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify(body) });
   if (res.status === 401) { location.href = "/login"; return null; }
+  if (res.status === 429) {
+    const j = await res.json().catch(() => ({}));
+    if (j.until) blockTv(j.until);
+    throw new StopScan(j.error || "TradingView paused this account's access.");
+  }
   if (res.status === 409) {
     const j = await res.json().catch(() => ({}));
     window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
@@ -139,6 +148,7 @@ async function scanPage(body: object, signal: AbortSignal, on: (ev: any) => void
       if (!part.startsWith("data: ")) continue;
       const ev = JSON.parse(part.slice(6));
       if (ev.type === "results") out = ev;
+      else if (ev.type === "error" && ev.stop) { if (ev.until) blockTv(ev.until); on(ev); throw new StopScan(ev.message); }
       else on(ev);
     }
   }
@@ -175,6 +185,8 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   async function scan() {
     if (busy) return;
     if (usingImage && !img) { setError("Add a reference image first."); return; }
+    const until = tvBlocked();
+    if (until) { setError(blockedText(until)); return; }
     setBusy(true); setError(null); setResult(null); setStatus({ text: "Starting" });
     const t = TEMPLATES.find((x) => x.id === pattern);
     const shape = t ? sampleAnchors(t.anchors, N) : [];
@@ -187,29 +199,37 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
     const notes: string[] = [];
     const show = () => setResult({ ...s, rows: [...s.rows].sort((x, y) => y.score - x.score), note: notes.join(" ") || undefined });
     try {
-      let info: { total: number; next?: number } | null = null, retried = false;
+      let info: { total: number; next?: number } | null = null, retried = false, skippedInARow = 0;
       for (let offset: number | undefined = 0; offset != null;) {
         const started = Date.now();
         let failure = "";
+        // Each page reports its own place; never reuse the last page's, or a failing page repeats forever.
+        info = null;
         const page: Awaited<ReturnType<typeof scanPage>> = await scanPage({ ...body, offset }, signal, (ev) => {
           if (ev.type === "page") { info = { total: ev.total, next: ev.next }; s.total = ev.total; }
           else if (ev.type === "status") setStatus(overall(ev, offset!, info));
           else if (ev.type === "match") { s.rows.push(...ev.rows.filter((r: Row) => !s.rows.some((x) => (x.id ?? x.symbol) === (r.id ?? r.symbol)))); show(); }
           else if (ev.type === "error") failure = ev.message;
-        }).catch((e) => { if ((e as Error).name === "AbortError") throw e; failure = (e as Error).message; return null; });
+        }).catch((e) => { if ((e as Error).name === "AbortError" || e instanceof StopScan) throw e; failure = (e as Error).message; return null; });
         const pageInfo = info as { total: number; next?: number } | null;
         let next: number | undefined;
         if (page) {
           s.checked += page.checked;
           if (page.note) notes.push(page.note);
           s.rows = mergeRows(s.rows, page.rows);
-          next = page.next; retried = false;
+          next = page.next; retried = false; skippedInARow = 0;
+        } else if (/TradingView/.test(failure)) {
+          // Anything TradingView refused: stop rather than keep calling it.
+          setError(`${failure} The scan stopped; the matches so far are saved.`);
+          save({ ...s, note: notes.join(" ") || undefined });
+          break;
         } else if (pageInfo && pageInfo.total > PAGE_SIZE && !retried) {
           // A page of a big market failed (time limit, AI error, network): try it once more, then move on.
           retried = true; next = offset;
         } else if (pageInfo && pageInfo.total > PAGE_SIZE) {
           notes.push(`Stocks ${offset + 1}-${Math.min(offset + PAGE_SIZE, pageInfo.total)} were skipped${failure ? ` (${failure})` : ""}.`);
           next = pageInfo.next; retried = false;
+          if (++skippedInARow >= 2) { setError("Two parts in a row failed, so the scan stopped. The matches so far are saved."); save({ ...s, note: notes.join(" ") || undefined }); break; }
         } else {
           if (failure) setError(failure);
           else if (!pageInfo) setError("The scan stopped before it started. Try again.");
@@ -229,6 +249,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
         }
       }
     } catch (e) {
+      if (e instanceof StopScan) { setError(`${e.message} The scan stopped; the matches so far are saved.`); if (s.checked || s.rows.length) save({ ...s, note: notes.join(" ") || undefined }); return; }
       setError((e as Error).name === "AbortError" ? (s.rows.length || s.checked ? "Stopped. The matches so far are saved." : "Stopped.") : (e as Error).message);
       if (s.checked || s.rows.length) save({ ...s, note: notes.join(" ") || undefined });
     } finally {

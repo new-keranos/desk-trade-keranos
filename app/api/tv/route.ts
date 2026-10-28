@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { openTv, originOf, READ_TOOLS, WRITE_TOOLS, TvAuthError, TvError, TvRetryError } from "@/lib/tradingview";
+import { openTv, originOf, READ_TOOLS, WRITE_TOOLS, TvAuthError, TvError, TvQuotaError, TvRetryError } from "@/lib/tradingview";
 
 export const runtime = "nodejs";
 
@@ -16,6 +16,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ data: await tv.call(tool, input) });
   } catch (err) {
     if (err instanceof TvAuthError) return NextResponse.json({ error: err.message, connect: true }, { status: 409 });
+    if (err instanceof TvQuotaError) return NextResponse.json({ error: err.message, quota: true, until: err.until }, { status: 429 });
     if (err instanceof TvRetryError) return NextResponse.json({ error: err.message, retry: true }, { status: 503 });
     return NextResponse.json({ error: (err as Error).message }, { status: err instanceof TvError ? 502 : 500 });
   } finally {

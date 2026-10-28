@@ -5,6 +5,7 @@ import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
 import Scanner, { Thumbs, type PatternHit } from "./scanner";
 import Candles, { type Ohlcv } from "./candles";
 import { currentModel, ModelSelect } from "./model";
+import { blockedText, blockTv, tvBlocked } from "./tvblock";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
 
 // ---------- helpers ----------
@@ -32,11 +33,14 @@ function ago(unix: number) {
 const CONDITION_WORD: Record<string, string> = { cross_up: "crosses above", cross_down: "crosses below", cross: "crosses", greater: "is above", less: "is below" };
 
 async function tv<T = any>(tool: string, input: Record<string, unknown> = {}, attempt = 0): Promise<T> {
+  const until = tvBlocked();
+  if (until) throw new Error(blockedText(until));
   const r = await fetch("/api/tv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }) });
   const j = await r.json().catch(() => ({}));
   // Several panels load at once; when the TradingView token expires one request refreshes it and the others retry.
   if (r.status === 503 && j.retry && attempt < 3) { await new Promise((ok) => setTimeout(ok, 900 * (attempt + 1))); return tv<T>(tool, input, attempt + 1); }
   if (r.status === 401) { location.href = "/login"; throw new Error("Signed out"); }
+  if (r.status === 429 && j.quota) { blockTv(j.until); throw new Error(j.error); }
   if (r.status === 409 && j.connect) window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
   if (!r.ok) throw new Error(j.error || `TradingView request failed (${r.status})`);
   return j.data as T;

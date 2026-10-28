@@ -1,6 +1,7 @@
 import "server-only";
 import type { ModelChoice } from "../nova/config";
-import { TV, type TvCaller } from "../tradingview";
+import { TV, TvQuotaError, type TvCaller } from "../tradingview";
+import { cachedBars, cachedJson, storeBars } from "./cache";
 import { judgeBatch, verifyMatch, type Bars, type Feedback, type Stock, type Verdict } from "./judge";
 import { AiBusy, aiReason, type RefImage } from "./llm";
 import { resample, type Length } from "./match";
@@ -13,7 +14,10 @@ import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "
 export const PAGE = 40;
 /** Stop starting AI work this long into a request, so it returns its results before the 300 s limit cuts it off. */
 const BUDGET_MS = 230_000;
-const CONCURRENCY = 6;
+/** Most stocks one scan checks, largest first. TradingView suspended an account after full S&P 500 scans
+ * (about 500 chart calls in a few minutes), so bigger markets need a theme to narrow them. */
+export const MAX_STOCKS = 200;
+const CONCURRENCY = 3;
 const BARS = 260;
 /** Stocks per AI request, and AI requests at once (the Gemini free tier allows only a few a minute). */
 const BATCH = 6;
@@ -42,7 +46,7 @@ export type ScanEvent =
   /** Matches from one AI batch, sent as soon as the AI has read it. */
   | { type: "match"; rows: ScanRow[] }
   | { type: "results"; rows: ScanRow[]; checked: number; skipped: number; note?: string; total: number; next?: number }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; stop?: boolean; until?: number }
   | { type: "done" };
 
 export type ScanOptions = { ai: ModelChoice; verify?: ModelChoice; feedback?: Feedback[]; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; offset?: number; signal?: AbortSignal };
@@ -54,7 +58,8 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const deadline = Date.now() + BUDGET_MS;
   const where = UNIVERSES[o.universe].label + (o.themes.length ? " · " + o.themes.map((t) => THEMES[t].label).join(", ") : "");
   emit({ type: "status", text: `Loading ${where} from TradingView` });
-  const { stocks } = await loadUniverse(o.tv, o.universe, o.themes);
+  const { stocks: all } = await cachedJson(`universe:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
+  const stocks = all.slice(0, MAX_STOCKS);
   if (!stocks.length) {
     const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: 0, note: `No stocks in ${where}.` };
     emit(r);
@@ -64,6 +69,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const list = stocks.slice(offset, offset + PAGE);
   const nextPage = offset + PAGE < stocks.length ? offset + PAGE : undefined;
   const notes: string[] = [];
+  if (all.length > MAX_STOCKS && offset === 0) notes.push(`Checked the ${MAX_STOCKS} largest of ${all.length} stocks, to stay inside TradingView's limits. Pick a theme to check the others.`);
   emit({ type: "page", total: stocks.length, next: nextPage });
 
   // 1. Daily bars from TradingView.
@@ -71,14 +77,22 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   let done = 0, skipped = 0, next = 0;
   const part = stocks.length > PAGE ? ` (${offset + 1}-${offset + list.length} of ${stocks.length})` : "";
   emit({ type: "status", text: `Loading ${list.length} charts${part}`, done: 0, total: list.length, phase: "load" });
+  let refused: TvQuotaError | null = null, fetched = 0;
   const fetcher = async () => {
-    while (next < list.length && !o.signal?.aborted) {
+    while (next < list.length && !o.signal?.aborted && !refused) {
       const s = list[next++];
       try {
-        const p = (await o.tv(TV.ohlcv, { symbol: s.symbol, interval: "1D", count: BARS, format: "columns" })) as { bars?: Bars };
-        const b = p?.bars;
-        if (b?.c?.length && b.c.length >= 30) loaded.push({ symbol: s.symbol, name: s.name, bars: { t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v } });
-      } catch {
+        let b = await cachedBars(s.symbol, BARS);
+        if (!b) {
+          fetched++;
+          const p = (await o.tv(TV.ohlcv, { symbol: s.symbol, interval: "1D", count: BARS, format: "columns" })) as { bars?: Bars };
+          b = p?.bars ? { t: p.bars.t, o: p.bars.o, h: p.bars.h, l: p.bars.l, c: p.bars.c, v: p.bars.v } : null;
+          if (b?.c?.length) await storeBars(s.symbol, BARS, b);
+        }
+        if (b?.c?.length && b.c.length >= 30) loaded.push({ symbol: s.symbol, name: s.name, bars: b });
+      } catch (err) {
+        // TradingView refused the account: stop at once, every further call makes it worse.
+        if (err instanceof TvQuotaError) { refused = err; return; }
         skipped++;
       }
       done++;
@@ -86,6 +100,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, fetcher));
+  if (refused) throw refused;
   if (skipped) notes.push(`${skipped} charts couldn't be loaded, likely TradingView's per-minute limit. Wait a minute and scan again to include them.`);
 
   // AI verdicts to result rows. One stock can match more than once; a match that mostly overlaps a stronger one for the same stock is dropped.

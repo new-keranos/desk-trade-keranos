@@ -49,6 +49,23 @@ export class TvAuthError extends TvError {}
 type Stored = { client?: OAuthClientInformationMixed; tokens?: OAuthTokens; verifier?: string; state?: string };
 type Store = { load(): Promise<Stored>; save(s: Stored): Promise<void>; clear(): Promise<void>; shared: boolean };
 
+/** TradingView refused calls for this account (quota or suspension). Nothing should call it again until `until`. */
+export class TvQuotaError extends TvError {
+  constructor(message: string, readonly until: number) { super(message); }
+}
+const QUOTA = /TOOL_QUOTA_EXCEEDED|quota exceeded|access to MCP is suspended|rate.?limit/i;
+/** Next 00:00 UTC, when TradingView lifts a day's suspension. */
+const nextUtcMidnight = () => { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); };
+// After a refusal, this server instance stops calling TradingView: more calls during a suspension risk a longer one.
+let blockedUntil = 0;
+export const tvBlockedUntil = () => (blockedUntil > Date.now() ? blockedUntil : 0);
+function quotaError(text: string): TvQuotaError {
+  // A per-minute limit clears in a minute; a suspension lasts until midnight UTC.
+  const until = /suspend/i.test(text) ? nextUtcMidnight() : Date.now() + 60_000;
+  blockedUntil = Math.max(blockedUntil, until);
+  return new TvQuotaError(`TradingView paused this account's MCP access until ${new Date(until).toISOString().slice(11, 16)} UTC: ${text.slice(0, 240)}`, until);
+}
+
 /** Thrown when this request lost a token-refresh race to a parallel request; retrying a moment later works. */
 export class TvRetryError extends TvError {}
 
@@ -121,7 +138,9 @@ const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_
 const REDIS_KEY = "keranos:tv_oauth";
 /** One TradingView login for everyone who can open the app. */
 export const sharedLogin = () => process.env.TV_SHARED_LOGIN === "1" && !!REDIS_URL && !!REDIS_TOKEN;
-async function redis(cmd: string[]): Promise<unknown> {
+/** Redis is configured (for the shared login or the scan cache). */
+export const hasRedis = () => !!REDIS_URL && !!REDIS_TOKEN;
+export async function redis(cmd: string[]): Promise<unknown> {
   const r = await fetch(REDIS_URL!, { method: "POST", headers: { Authorization: `Bearer ${REDIS_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify(cmd), cache: "no-store" });
   const j = (await r.json().catch(() => ({}))) as { result?: unknown; error?: string };
   if (!r.ok || j.error) throw new TvError(`Couldn't reach the login store (Redis): ${j.error ?? r.status}`);
@@ -218,6 +237,7 @@ export type TvCaller = (tool: string, args?: Record<string, unknown>) => Promise
  * because a token refresh may need to update the login cookie.
  */
 export async function openTv(origin: string): Promise<{ call: TvCaller; close: () => Promise<void> }> {
+  if (tvBlockedUntil()) throw new TvQuotaError(`TradingView paused this account's MCP access until ${new Date(blockedUntil).toISOString().slice(11, 16)} UTC. The app won't call it again before then.`, blockedUntil);
   const p = await provider(origin);
   if (!p.tokens()) throw new TvAuthError("Connect TradingView first.");
   const transport = new StreamableHTTPClientTransport(new URL(TV_MCP_URL), { authProvider: p });
@@ -230,14 +250,17 @@ export async function openTv(origin: string): Promise<{ call: TvCaller; close: (
     throw new TvError(`Could not connect to TradingView: ${(err as Error).message}`);
   }
   const call: TvCaller = async (tool, args = {}) => {
+    if (tvBlockedUntil()) throw new TvQuotaError(`TradingView paused this account's MCP access until ${new Date(blockedUntil).toISOString().slice(11, 16)} UTC. The app won't call it again before then.`, blockedUntil);
     let res;
     try {
       res = await client.callTool({ name: tool, arguments: args });
     } catch (err) {
       if (p.raced) throw new TvRetryError("TradingView login is refreshing. Try again in a moment.");
       if (err instanceof UnauthorizedError) throw new TvAuthError("TradingView login expired. Connect again.");
+      if (QUOTA.test((err as Error).message)) throw quotaError((err as Error).message);
       throw new TvError(`TradingView call failed: ${(err as Error).message}`);
     }
+    if (res.isError && QUOTA.test(textOf(res.content))) throw quotaError(textOf(res.content));
     if (res.isError) throw new TvError(`TradingView returned an error: ${textOf(res.content).slice(0, 300)}`);
     if (res.structuredContent !== undefined) return res.structuredContent;
     const text = textOf(res.content);

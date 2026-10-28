@@ -5,7 +5,7 @@ import { resolveChoice } from "@/lib/nova/config";
 import { templateById } from "@/lib/scan/templates";
 import { THEMES, UNIVERSES, type ThemeId, type UniverseId } from "@/lib/scan/universe";
 import { flushTelemetry, traceRequest } from "@/lib/telemetry";
-import { openTv, originOf, TvAuthError } from "@/lib/tradingview";
+import { openTv, originOf, TvAuthError, TvQuotaError } from "@/lib/tradingview";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -43,6 +43,7 @@ export async function POST(req: Request) {
   try {
     tv = await openTv(originOf(req));
   } catch (err) {
+    if (err instanceof TvQuotaError) return Response.json({ error: err.message, quota: true, until: err.until }, { status: 429 });
     return Response.json({ error: (err as Error).message, connect: err instanceof TvAuthError }, { status: err instanceof TvAuthError ? 409 : 502 });
   }
 
@@ -58,7 +59,8 @@ export async function POST(req: Request) {
       } catch (err) {
         let message = "The scan was interrupted. Try again.";
         if (err instanceof Error && /TradingView|AI /.test(err.message)) message = err.message;
-        emit({ type: "error", message });
+        // A TradingView refusal ends the whole scan: the browser must not ask for more pages.
+        emit(err instanceof TvQuotaError ? { type: "error", message, stop: true, until: err.until } : { type: "error", message });
       } finally {
         emit({ type: "done" });
         controller.close();
