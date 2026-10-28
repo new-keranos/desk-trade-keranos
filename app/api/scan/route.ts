@@ -1,8 +1,10 @@
+import { after } from "next/server";
 import { z } from "zod";
 import { runScan, type ScanEvent } from "@/lib/scan/run";
 import { resolveChoice } from "@/lib/nova/config";
 import { templateById } from "@/lib/scan/templates";
 import { THEMES, UNIVERSES, type ThemeId, type UniverseId } from "@/lib/scan/universe";
+import { flushTelemetry, traceRequest } from "@/lib/telemetry";
 import { openTv, originOf, TvAuthError } from "@/lib/tradingview";
 
 export const runtime = "nodejs";
@@ -36,13 +38,15 @@ export async function POST(req: Request) {
     return Response.json({ error: (err as Error).message, connect: err instanceof TvAuthError }, { status: err instanceof TvAuthError ? 409 : 502 });
   }
 
+  after(flushTelemetry);
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       const emit = (e: ScanEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       try {
         const image = "image" in pattern ? pattern.image : undefined;
-        await runScan({ ai, tv: tv.call, universe, themes, length, template, image, signal: req.signal }, emit);
+        await traceRequest("scan", ai, { universe, themes, length, pattern: template?.name ?? "image" },
+          () => runScan({ ai, tv: tv.call, universe, themes, length, template, image, signal: req.signal }, emit));
       } catch (err) {
         let message = "The scan was interrupted. Try again.";
         if (err instanceof Error && /TradingView|AI /.test(err.message)) message = err.message;

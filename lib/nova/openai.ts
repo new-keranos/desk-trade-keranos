@@ -1,6 +1,7 @@
 import "server-only";
 import OpenAI from "openai";
 import { reasons } from "./config";
+import { openaiUsage, traceGeneration } from "../telemetry";
 import { contextLine, executeTool, MAX_ROUNDS, OUT_OF_ROUNDS, PERSONA, TOOL_SPECS, type RunOptions } from "./tools";
 
 const TOOLS: OpenAI.Chat.ChatCompletionTool[] = TOOL_SPECS.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } }));
@@ -15,10 +16,10 @@ export async function runOpenAI(opts: RunOptions): Promise<void> {
   ];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    const res = await client.chat.completions.create({
+    const res = await traceGeneration("chat", opts.ai, messages.at(-1), () => client!.chat.completions.create({
       model: opts.ai.model, messages, tools: TOOLS,
       ...(reasons(opts.ai.model) ? { reasoning_effort: opts.effort } : {}),
-    }, { signal: opts.signal });
+    }, { signal: opts.signal }), (r) => ({ model: r.model, usage: openaiUsage(r.usage), output: r.choices[0]?.message }));
     const choice = res.choices[0];
     const msg = choice?.message;
     if (msg?.content?.trim()) emit({ type: "text", text: msg.content });
