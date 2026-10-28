@@ -75,6 +75,12 @@ export function claudeUsage(u?: { input_tokens: number; output_tokens: number; c
 }
 
 /** OpenAI's prompt_tokens includes cached tokens, and completion_tokens includes reasoning. */
+/** Usage from OpenAI's Responses API. */
+export function openaiResponsesUsage(u?: { input_tokens: number; output_tokens: number; total_tokens: number; input_tokens_details?: { cached_tokens?: number } } | null): Usage {
+  if (!u) return {};
+  const cached = u.input_tokens_details?.cached_tokens ?? 0;
+  return clean({ input: u.input_tokens - cached, input_cached_tokens: cached, output: u.output_tokens, total: u.total_tokens });
+}
 export function openaiUsage(u?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } }): Usage {
   if (!u) return {};
   const cached = u.prompt_tokens_details?.cached_tokens ?? 0;

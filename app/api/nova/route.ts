@@ -18,6 +18,10 @@ const Body = z.object({
   ai: z.object({ provider: z.enum(["gemini", "claude", "openai"]), model: z.string().max(80) }).optional(),
 });
 
+/** OpenAI's own explanation, e.g. which parameter it rejected. */
+const openaiMessage = (err: InstanceType<typeof OpenAI.APIError>) =>
+  ((err.error as { message?: string } | undefined)?.message ?? err.message.replace(/^\d+\s*/, "")).slice(0, 300);
+
 export async function POST(req: Request) {
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Bad request" }, { status: 400 });
@@ -56,7 +60,7 @@ export async function POST(req: Request) {
             : err.code === "insufficient_quota" ? "The OpenAI account has no credit left. Add billing on platform.openai.com."
             : err.status === 429 ? "Rate limited by OpenAI. Wait a minute and try again."
             : err.status === 404 ? `OpenAI doesn't offer ${ai.model} to this key. Pick another model.`
-            : `OpenAI API error ${err.status ?? ""}. Try again.`;
+            : `OpenAI API error ${err.status ?? ""}: ${openaiMessage(err)}`;
         }
         else if (err instanceof Anthropic.APIError) message = `Claude API error ${err.status ?? ""}. Try again.`;
         else if (err instanceof Error && err.message.includes("TradingView")) message = err.message;

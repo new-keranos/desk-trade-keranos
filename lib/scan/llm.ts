@@ -18,7 +18,7 @@ let openai: OpenAI | null = null;
 export function aiReason(err: unknown): string {
   if (err instanceof ApiError) return `Gemini error ${err.status}${err.status === 402 ? " (this API key needs billing; check Google AI Studio or pick another model)" : ""}${/API key/i.test(err.message) ? " (check GEMINI_API_KEY)" : /model/i.test(err.message) && err.status === 404 ? " (check GEMINI_MODEL)" : ""}`;
   if (err instanceof Anthropic.APIError) return `Claude error ${err.status ?? ""}${err.status === 401 ? " (check ANTHROPIC_API_KEY)" : ""}`.trim();
-  if (err instanceof OpenAI.APIError) return `OpenAI error ${err.status ?? ""}${err.status === 401 ? " (check OPENAI_API_KEY)" : err.code === "insufficient_quota" ? " (no credit left on the OpenAI account)" : ""}`.trim();
+  if (err instanceof OpenAI.APIError) return `OpenAI error ${err.status ?? ""}${err.status === 401 ? " (check OPENAI_API_KEY)" : err.code === "insufficient_quota" ? " (no credit left on the OpenAI account)" : `: ${((err.error as { message?: string } | undefined)?.message ?? err.message).slice(0, 200)}`}`.trim();
   if (err instanceof SyntaxError) return "the AI's reply wasn't valid JSON";
   return err instanceof Error ? err.message.slice(0, 160) : "unknown error";
 }
