@@ -43,6 +43,7 @@ const SYSTEM = `You are a senior technical analyst who reads daily price charts 
 You are given daily bars as rows "i,high,low,close" (i is the row number, oldest first) for several stocks.
 Judge each stock on its own: does the requested pattern appear, finished recently or still forming at the latest bar? It must end within the last 15 rows.
 Be strict, like a professional: proportions matter (similar levels where the pattern needs them, real depth, enough touches on each line). Do not force a match; most stocks will not match.
+Before you answer for a stock, check every rule in the pattern definition against the actual rows. Set match true only if every rule holds; if any rule fails or is unclear, set match false. Confidence 80+ means a textbook example; 70-79 a clear but imperfect one.
 For each match, mark what you used so it can be drawn on the chart:
 - points: the pattern's key turning points, with the row i and the bar's high or low price there. Short Thai labels, e.g. "ยอด", "ก้น 1", "ก้น 2", "หัว", "ไหล่ซ้าย", "ขอบซ้าย", "หูจับ".
 - lines: the lines that define the pattern (neckline, resistance, support, channel or wedge sides), each from (i1,p1) to (i2,p2) on real touches. role is "upper", "lower" or "level". Thai label, e.g. "เส้นคอ", "แนวต้าน", "บน", "ล่าง". extend true if the line should be projected to the latest bar.
@@ -128,7 +129,7 @@ function snap(b: Bars, k: number, price: number, radius: number) {
     }
   }
   // Keep the AI's own number when no candle is near it (e.g. a projected line level).
-  return Math.abs(best.price - price) / price <= 0.03 ? { k: best.k, price: best.price } : { k, price };
+  return Math.abs(best.price - price) / price <= 0.03 ? { k: best.k, price: best.price, near: true } : { k, price, near: false };
 }
 
 export function patternBrief(template?: Template) {
@@ -152,13 +153,18 @@ ${views.map((v) => `### ${v.s.symbol} (${v.s.name}), ${v.idx.length} rows, last 
     if (!v || !r.match || !r.points.length) continue;
     const at = (i: number) => v.idx[Math.max(0, Math.min(v.idx.length - 1, i))];
     const b = v.s.bars, rad = step + 2;
-    const points = r.points.map((p) => ({ ...snap(b, at(p.i!), p.price!, rad), label: p.label ?? "" })).sort((a, c) => a.k - c.k);
+    const snapped = r.points.map((p) => ({ ...snap(b, at(p.i!), p.price!, rad), label: p.label ?? "" }));
+    // Turning points must sit on real highs and lows; a reply whose points mostly don't is reading the chart wrong.
+    if (snapped.filter((p) => p.near).length < Math.ceil(snapped.length * 0.75)) continue;
+    const points = snapped.map(({ near: _n, ...p }) => p).sort((a, c) => a.k - c.k);
     const lines = r.lines.map((l) => {
       const a = snap(b, at(l.i1!), l.p1!, rad), c = snap(b, at(l.i2!), l.p2!, rad);
       return { k1: a.k, p1: a.price, k2: c.k, p2: c.price, role: l.role, label: l.label ?? "", extend: l.extend };
     }).filter((l) => l.k2 > l.k1);
     const ks = [...points.map((p) => p.k), ...lines.flatMap((l) => [l.k1, l.k2])];
     const start = Math.min(r.start != null ? at(r.start) : Infinity, ...ks), end = Math.max(r.end != null ? at(r.end) : -Infinity, ...ks);
+    // The pattern must reach the recent bars (the prompt asks for the last 15 rows).
+    if (end < b.c.length - 1 - 16 * step) continue;
     out.push({ symbol: v.s.symbol, confidence: Math.round(r.confidence), stage: r.stage, start, end, points, lines,
       evidence: r.evidence, summary: r.summary, breakout: r.breakout, invalidation: r.invalidation });
   }

@@ -64,6 +64,37 @@ async function readImage(file: File): Promise<Img> {
   return { mime: "image/jpeg", data: url.slice(url.indexOf(",") + 1), preview: url };
 }
 
+/** Rows from a page, replacing the same matches already shown while the page streamed. */
+const mergeRows = (have: Row[], add: Row[]) => [...have.filter((x) => !add.some((r) => (r.id ?? r.symbol) === (x.id ?? x.symbol))), ...add];
+
+/** One page of a scan, streamed. Resolves with the page's final results, or null when the server reported an error. */
+async function scanPage(body: object, signal: AbortSignal, on: (ev: any) => void): Promise<{ rows: Row[]; checked: number; note?: string; total: number; next?: number } | null> {
+  const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify(body) });
+  if (res.status === 401) { location.href = "/login"; return null; }
+  if (res.status === 409) {
+    const j = await res.json().catch(() => ({}));
+    window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
+    throw new Error(j.error || "Connect TradingView first.");
+  }
+  if (!res.ok || !res.body) throw new Error("The scanner is unavailable right now.");
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "", out = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split("\n\n"); buf = parts.pop() ?? "";
+    for (const part of parts) {
+      if (!part.startsWith("data: ")) continue;
+      const ev = JSON.parse(part.slice(6));
+      if (ev.type === "results") out = ev;
+      else on(ev);
+    }
+  }
+  return out;
+}
+
 export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, same: PatternHit[]) => void; hidden?: boolean }) {
   const [pattern, setPattern] = useState<string>("double_bottom");
   const [img, setImg] = useState<Img | null>(null);
@@ -99,38 +130,39 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
     const shape = t ? sampleAnchors(t.anchors, N) : [];
     const label = t?.name ?? "Your image pattern";
     ctl.current = new AbortController();
+    const signal = ctl.current.signal;
+    const body = { ai: currentModel(), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
+    // One saved scan grows as matches arrive, page after page.
+    const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: [], checked: 0, shape, label };
+    const notes: string[] = [];
+    const show = () => setResult({ ...s, rows: [...s.rows].sort((x, y) => y.score - x.score), note: notes.join(" ") || undefined });
     try {
-      const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
-        body: JSON.stringify({ ai: currentModel(), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } }) });
-      if (res.status === 401) { location.href = "/login"; return; }
-      if (res.status === 409) {
-        const j = await res.json().catch(() => ({}));
-        window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
-        throw new Error(j.error || "Connect TradingView first.");
-      }
-      if (!res.ok || !res.body) throw new Error("The scanner is unavailable right now.");
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split("\n\n"); buf = parts.pop() ?? "";
-        for (const part of parts) {
-          if (!part.startsWith("data: ")) continue;
-          const ev = JSON.parse(part.slice(6));
+      for (let offset: number | undefined = 0; offset != null;) {
+        const started = Date.now();
+        const page = await scanPage({ ...body, offset }, signal, (ev) => {
           if (ev.type === "status") setStatus(ev);
-          else if (ev.type === "results") {
-            const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: ev.rows, checked: ev.checked, note: ev.note, shape, label };
-            setResult(s);
-            save(s);
-          }
+          else if (ev.type === "match") { s.rows.push(...ev.rows.filter((r: Row) => !s.rows.some((x) => (x.id ?? x.symbol) === (r.id ?? r.symbol)))); show(); }
           else if (ev.type === "error") setError(ev.message);
+        });
+        if (!page) break;
+        s.checked += page.checked;
+        if (page.note) notes.push(page.note);
+        s.rows = mergeRows(s.rows, page.rows);
+        show(); save({ ...s, note: notes.join(" ") || undefined });
+        offset = page.next;
+        // TradingView allows about 100 calls a minute, so pages start at least a minute apart.
+        if (offset != null) {
+          const left = 62_000 - (Date.now() - started);
+          for (let t = left; t > 0 && !signal.aborted; t -= 1000) {
+            setStatus({ text: `Checked ${offset} of ${page.total} stocks · next ${Math.ceil(t / 1000)} s (TradingView's per-minute limit)`, done: offset, total: page.total });
+            await new Promise((ok) => setTimeout(ok, Math.min(1000, t)));
+          }
+          if (signal.aborted) throw new DOMException("Stopped", "AbortError");
         }
       }
     } catch (e) {
-      setError((e as Error).name === "AbortError" ? "Stopped." : (e as Error).message);
+      setError((e as Error).name === "AbortError" ? (s.rows.length || s.checked ? "Stopped. The matches so far are saved." : "Stopped.") : (e as Error).message);
+      if (s.checked || s.rows.length) save({ ...s, note: notes.join(" ") || undefined });
     } finally {
       setBusy(false); setStatus(null);
     }
@@ -216,7 +248,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
             {result.rows.length > 0 && <button type="button" className="btn" onClick={() => downloadCsv(result)}>Download CSV</button>}
           </div>
           {result.note && <div className="note">{result.note}</div>}
-          {!result.rows.length && <div className="note">The AI wasn&apos;t at least 60% sure about any chart. Try another pattern length, market or theme.</div>}
+          {!result.rows.length && <div className="note">{busy ? "No matches yet. They appear here as the AI reads each batch of charts." : <>The AI wasn&apos;t at least 70% sure about any chart. Try another pattern length, market or theme.</>}</div>}
           <ul className="hits">
             {hitsOf(result).map((r, _i, all) => {
               const same = all.filter((x) => x.symbol === r.symbol);

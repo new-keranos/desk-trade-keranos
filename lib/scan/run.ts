@@ -1,20 +1,21 @@
 import "server-only";
 import type { ModelChoice } from "../nova/config";
 import { TV, type TvCaller } from "../tradingview";
-import { judgeBatch, type Bars, type Stock } from "./judge";
+import { judgeBatch, type Bars, type Stock, type Verdict } from "./judge";
 import { AiBusy, aiReason, type RefImage } from "./llm";
 import { resample, type Length } from "./match";
 import type { Template } from "./templates";
 import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "./universe";
 
-/** TradingView allows about 100 tool calls a minute, so one scan checks at most this many stocks (largest first). */
-export const MAX_SCAN = 80;
+/** TradingView allows about 100 tool calls a minute, so one request checks a page of this many stocks (largest first)
+ * and the browser asks for the next page a minute later until the whole market is done. */
+export const PAGE = 80;
 const CONCURRENCY = 6;
 const BARS = 260;
 /** Stocks per AI request, and AI requests at once (the Gemini free tier allows only a few a minute). */
-const BATCH = 8;
+const BATCH = 6;
 const AI_CONCURRENCY = 2;
-const MIN_CONFIDENCE = 60;
+const MIN_CONFIDENCE = 70;
 const BUSY_WAIT_MS = 35_000;
 
 export type ScanPoint = { k: number; date: string; price: number; label?: string };
@@ -31,11 +32,13 @@ export type ScanRow = {
 };
 export type ScanEvent =
   | { type: "status"; text: string; done?: number; total?: number }
-  | { type: "results"; rows: ScanRow[]; checked: number; skipped: number; note?: string }
+  /** Matches from one AI batch, sent as soon as the AI has read it. */
+  | { type: "match"; rows: ScanRow[] }
+  | { type: "results"; rows: ScanRow[]; checked: number; skipped: number; note?: string; total: number; next?: number }
   | { type: "error"; message: string }
   | { type: "done" };
 
-export type ScanOptions = { ai: ModelChoice; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; signal?: AbortSignal };
+export type ScanOptions = { ai: ModelChoice; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; offset?: number; signal?: AbortSignal };
 
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((ok) => { const id = setTimeout(ok, ms); signal?.addEventListener("abort", () => { clearTimeout(id); ok(); }, { once: true }); });
@@ -45,18 +48,20 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   emit({ type: "status", text: `Loading ${where} from TradingView` });
   const { stocks } = await loadUniverse(o.tv, o.universe, o.themes);
   if (!stocks.length) {
-    const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, note: `No stocks in ${where}.` };
+    const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: 0, note: `No stocks in ${where}.` };
     emit(r);
     return r;
   }
-  const list = stocks.slice(0, MAX_SCAN);
+  const offset = Math.max(0, o.offset ?? 0);
+  const list = stocks.slice(offset, offset + PAGE);
+  const nextPage = offset + PAGE < stocks.length ? offset + PAGE : undefined;
   const notes: string[] = [];
-  if (stocks.length > MAX_SCAN) notes.push(`Checked the ${MAX_SCAN} largest of ${stocks.length} stocks. Pick a theme to narrow the list.`);
 
   // 1. Daily bars from TradingView.
   const loaded: Stock[] = [];
   let done = 0, skipped = 0, next = 0;
-  emit({ type: "status", text: `Loading ${list.length} charts`, done: 0, total: list.length });
+  const part = stocks.length > PAGE ? ` (${offset + 1}-${offset + list.length} of ${stocks.length})` : "";
+  emit({ type: "status", text: `Loading ${list.length} charts${part}`, done: 0, total: list.length });
   const fetcher = async () => {
     while (next < list.length && !o.signal?.aborted) {
       const s = list[next++];
@@ -74,10 +79,32 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   await Promise.all(Array.from({ length: CONCURRENCY }, fetcher));
   if (skipped) notes.push(`${skipped} charts couldn't be loaded, likely TradingView's per-minute limit. Wait a minute and scan again to include them.`);
 
+  // AI verdicts to result rows. One stock can match more than once; a match that mostly overlaps a stronger one for the same stock is dropped.
+  const info = new Map(list.map((s) => [s.symbol, s]));
+  const toRows = (vs: Verdict[]): ScanRow[] => {
+    const kept: Verdict[] = [];
+    for (const v of vs.filter((x) => x.confidence >= MIN_CONFIDENCE).sort((a, b) => b.confidence - a.confidence)) {
+      const dup = kept.some((k) => k.symbol === v.symbol && Math.min(k.end, v.end) - Math.max(k.start, v.start) > 0.6 * Math.min(k.end - k.start, v.end - v.start));
+      if (!dup) kept.push(v);
+    }
+    return kept.map((v) => {
+      const s = info.get(v.symbol)!, b = loaded.find((x) => x.symbol === v.symbol)!.bars;
+      const win = b.c.slice(v.start, v.end + 1);
+      const lo = Math.min(...b.l.slice(v.start, v.end + 1)), hi = Math.max(...b.h.slice(v.start, v.end + 1));
+      const at = (k: number, price: number) => ({ date: day(b.t[k]), price });
+      return { id: `${v.symbol}@${day(b.t[v.start])}`, symbol: s.symbol, name: s.name, description: s.description, sector: s.sector, close: s.close, change: s.change,
+        score: v.confidence, bars: v.end - v.start + 1, from: day(b.t[v.start]), to: day(b.t[v.end]),
+        heightPct: lo > 0 ? Math.round(((hi - lo) / lo) * 1000) / 10 : 0, closes: win.length > 96 ? resample(win, 96) : win,
+        checks: v.evidence, points: v.points.map((p) => ({ k: p.k - v.start, date: day(b.t[p.k]), price: p.price, label: p.label })),
+        lines: v.lines.map((l) => ({ from: at(l.k1, l.p1), to: at(l.k2, l.p2), role: l.role, label: l.label, extend: l.extend })),
+        stage: v.stage, summary: v.summary, breakout: v.breakout, invalidation: v.invalidation };
+    });
+  };
+
   // 2. The AI reads the charts in batches and judges each one against the pattern.
   const batches: Stock[][] = [];
   for (let k = 0; k < loaded.length; k += BATCH) batches.push(loaded.slice(k, k + BATCH));
-  const verdicts: Awaited<ReturnType<typeof judgeBatch>> = [];
+  const verdicts: Verdict[] = [];
   let read = 0, unread = 0, nb = 0, failed = 0, reason = "";
   emit({ type: "status", text: `AI is reading ${loaded.length} charts`, done: 0, total: loaded.length });
   const reader = async () => {
@@ -85,7 +112,10 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
       const batch = batches[nb++];
       for (let attempt = 0; ; attempt++) {
         try {
-          verdicts.push(...(await judgeBatch(batch, o)));
+          const got = await judgeBatch(batch, o);
+          verdicts.push(...got);
+          const rows = toRows(got);
+          if (rows.length) emit({ type: "match", rows });
           break;
         } catch (err) {
           if (o.signal?.aborted) return;
@@ -108,27 +138,10 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   if (unread) notes.push(`The AI couldn't read ${unread} charts (${reason || "rate limit"}). Scan again in a minute to include them.`);
   if (unread === loaded.length && loaded.length) throw new Error(failed ? `The AI couldn't read the charts: ${reason}.` : "AI rate limit reached. Wait a minute and try again.");
 
-  const info = new Map(list.map((s) => [s.symbol, s]));
-  // One stock can match more than once; drop a match that mostly overlaps a stronger one for the same stock.
-  const kept: typeof verdicts = [];
-  for (const v of verdicts.filter((x) => x.confidence >= MIN_CONFIDENCE).sort((a, b) => b.confidence - a.confidence)) {
-    const dup = kept.some((k) => k.symbol === v.symbol && Math.min(k.end, v.end) - Math.max(k.start, v.start) > 0.6 * Math.min(k.end - k.start, v.end - v.start));
-    if (!dup) kept.push(v);
-  }
-  const rows: ScanRow[] = kept.map((v) => {
-    const s = info.get(v.symbol)!, b = loaded.find((x) => x.symbol === v.symbol)!.bars;
-    const win = b.c.slice(v.start, v.end + 1);
-    const lo = Math.min(...b.l.slice(v.start, v.end + 1)), hi = Math.max(...b.h.slice(v.start, v.end + 1));
-    const at = (k: number, price: number) => ({ date: day(b.t[k]), price });
-    return { id: `${v.symbol}@${day(b.t[v.start])}`, symbol: s.symbol, name: s.name, description: s.description, sector: s.sector, close: s.close, change: s.change,
-      score: v.confidence, bars: v.end - v.start + 1, from: day(b.t[v.start]), to: day(b.t[v.end]),
-      heightPct: lo > 0 ? Math.round(((hi - lo) / lo) * 1000) / 10 : 0, closes: win.length > 96 ? resample(win, 96) : win,
-      checks: v.evidence, points: v.points.map((p) => ({ k: p.k - v.start, date: day(b.t[p.k]), price: p.price, label: p.label })),
-      lines: v.lines.map((l) => ({ from: at(l.k1, l.p1), to: at(l.k2, l.p2), role: l.role, label: l.label, extend: l.extend })),
-      stage: v.stage, summary: v.summary, breakout: v.breakout, invalidation: v.invalidation };
-  });
+  const rows = toRows(verdicts);
   rows.sort((a, b) => b.score - a.score);
-  const r = { type: "results" as const, rows: rows.slice(0, o.limit ?? 20), checked: loaded.length - unread, skipped: skipped + unread, note: notes.join(" ") || undefined };
+  const r = { type: "results" as const, rows: o.limit ? rows.slice(0, o.limit) : rows, checked: loaded.length - unread, skipped: skipped + unread,
+    note: notes.join(" ") || undefined, total: stocks.length, next: nextPage };
   emit(r);
   return r;
 }

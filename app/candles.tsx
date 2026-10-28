@@ -23,7 +23,7 @@ const alpha = (hex: string, a: number) => {
   const n = parseInt(m[1], 16);
   return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 };
-const ANN = "#f6ad55", SMA50 = "#8ab4f8", SMA200 = "#c58af9", RSI = "#c58af9";
+const ANN = "#f6ad55", REF = "#7fd8d0", SMA50 = "#8ab4f8", SMA200 = "#c58af9", RSI = "#c58af9";
 const PRICE_W = 64;
 const fmt = (v: number) => (v >= 1000 ? v.toFixed(0) : v >= 100 ? v.toFixed(1) : v.toFixed(2));
 
@@ -127,6 +127,14 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
       }
     }
 
+    // The reference pattern, stretched over the match's dates and price range, for comparing with the AI's marks.
+    const ref: [number, number][] = [];
+    if (drawn && i0 >= 0 && overlay!.shape.length > 1) {
+      const lo = Math.min(...bars.l.slice(i0, i1 + 1)), hi = Math.max(...bars.h.slice(i0, i1 + 1)), s = overlay!.shape, m = s.length - 1;
+      // Whole bars only: the time scale maps fractional indexes wrongly.
+      for (let j = 0; j <= m; j++) ref.push([Math.round(i0 + (j / m) * (i1 - i0)), lo + s[j] * (hi - lo)]);
+    }
+
     // The AI's marks, redrawn in an SVG layer whenever the chart moves.
     const lineEnd = (l: (typeof lines)[number]) => (l.extend ? n - 1 + 3 : l.k2);
     const valueAt = (l: (typeof lines)[number], k: number) => l.p1 + ((l.p2 - l.p1) * (k - l.k1)) / (l.k2 - l.k1);
@@ -145,6 +153,12 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
       const Y = (p: number) => candles.priceToCoordinate(p);
       const xy = (k: number, p: number) => { const x = X(k), y = Y(p); return x == null || y == null ? null : [x, y] as const; };
 
+      const refXY = ref.map(([k, p]) => xy(k, p));
+      if (refXY.length && refXY.every(Boolean)) {
+        g.append(el("polyline", { points: refXY.map((p) => p!.join(",")).join(" "), fill: "none", stroke: REF, "stroke-width": 1.4, "stroke-dasharray": "3 4", "stroke-opacity": 0.75 }));
+        const e = refXY[0]!;
+        g.append(el("text", { x: e[0] + 4, y: e[1] - 6, fill: REF, "font-size": 11, class: "ann-t" }, "Ref pattern"));
+      }
       const upper = lines.find((l) => l.role === "upper"), lowerL = lines.find((l) => l.role === "lower");
       if (upper && lowerL) {
         const s = Math.min(upper.k1, lowerL.k1), e = Math.max(lineEnd(upper), lineEnd(lowerL));
@@ -197,6 +211,7 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
         <div className="candles-legend">
           <span style={{ color: SMA50 }}>SMA 50 {legend.s50 != null ? fmt(legend.s50) : "—"}</span>
           <span style={{ color: SMA200 }}>SMA 200 {legend.s200 != null ? fmt(legend.s200) : "—"}</span>
+          {!!overlay?.shape?.length && !!(overlay.lines?.length || overlay.points?.length) && <span style={{ color: REF }}>┄ Ref pattern</span>}
         </div>
       </div>
       <div className="candles-rsi">
