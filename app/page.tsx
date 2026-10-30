@@ -6,6 +6,7 @@ import Scanner, { Thumbs, type PatternHit } from "./scanner";
 import Candles, { type Ohlcv } from "./candles";
 import { currentModel, ModelSelect } from "./model";
 import { blockedText, blockTv, tvBlocked } from "./tvblock";
+import { DIV_LABEL, findDivergences } from "@/lib/scan/indicators";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
 
 // ---------- helpers ----------
@@ -65,7 +66,7 @@ function md(text: string) {
 const PULSE: [string, string][] = [["SP:SPX", "S&P 500"], ["NASDAQ:NDX", "Nasdaq 100"], ["SET:SET", "SET"], ["BINANCE:BTCUSDT", "BTC"], ["CRYPTOCAP:TOTAL", "Crypto cap"]];
 const QUOTE_COLS = ["name", "description", "close", "change", "change_abs", "volume", "market_cap_basic", "price_earnings_ttm", "sector", "high", "low"];
 const CMDS: [string, string][] = [["brief", "brief"], ["analyze", "analyze"], ["compare", "compare NASDAQ:AAPL NASDAQ:MSFT"], ["scan", "scan momentum US"],
-  ["pattern", "pattern double bottom SET100"],
+  ["pattern", "pattern double bottom SET100"], ["divergence", "RSI divergence"],
   ["SET dividends", "dividends SET"], ["earnings", "earnings this week"], ["macro US", "macro US"], ["macro TH", "macro TH"]];
 
 // ---------- page ----------
@@ -245,6 +246,7 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
   const [err, setErr] = useState<{ chart?: string; tech?: string; news?: string }>({});
   const [range, setRange] = useState(126);
   const [mode, setMode] = useState<"candles" | "tv" | "line">("tv");
+  const [showDiv, setShowDiv] = useState(true);
   // TradingView's free embedded chart can't show SET stocks, so those use our own candles.
   const tvOk = !!symbol && market(symbol) !== "SET";
   useEffect(() => { setMode(tvOk ? "tv" : "candles"); }, [symbol, tvOk]);
@@ -301,6 +303,7 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
             <button className="chip" aria-pressed={mode === "candles"} onClick={() => setMode("candles")}>Candles</button>
             {tvOk && <button className="chip" aria-pressed={mode === "tv"} onClick={() => setMode("tv")}>TradingView</button>}
             <button className="chip" aria-pressed={mode === "line"} onClick={() => setMode("line")}>Line</button>
+            {mode === "candles" && <button className="chip" aria-pressed={showDiv} title="Mark RSI 14 divergences between recent swing highs and lows" onClick={() => setShowDiv((v) => !v)}>RSI divergence</button>}
             {symbol && <a className="ext" href={tvChartUrl(symbol)} target="_blank" rel="noopener noreferrer" style={{ alignSelf: "center", marginLeft: 6 }}>Open in TradingView ↗</a>}
           </div>
         </div>
@@ -308,9 +311,10 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
           {mode === "tv" && symbol ? <TvChart symbol={symbol} range={pattern ? rangeSince(pattern.from) : undefined} />
             : err.chart ? <div className="note warn">{err.chart}</div>
             : !bars?.c?.length ? <div className="note">Loading chart…</div>
-            : mode === "candles" ? <Candles key={pattern?.id ?? "plain"} bars={bars} visible={range} overlay={pattern} />
+            : mode === "candles" ? <Candles key={pattern?.id ?? "plain"} bars={bars} visible={range} overlay={pattern} divergences={showDiv} />
             : <Chart bars={{ t: bars.t.slice(-252), c: bars.c.slice(-252) } as Bars} range={range} highlight={pattern} />}
         </div>
+        {mode === "candles" && showDiv && bars?.c?.length ? <DivNote bars={bars} /> : null}
         <dl className="stats" style={{ margin: 0 }}>
           {stats.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
         </dl>
@@ -340,6 +344,20 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
 }
 
 /** The scanner match on the dashboard, with a button to have Agent check it. The AI's marks are drawn on the candles below. */
+/** The latest RSI divergence in words, under the chart. */
+function DivNote({ bars }: { bars: Bars }) {
+  const d = useMemo(() => findDivergences(bars, { recent: 60 })[0], [bars]);
+  const day = (k: number) => new Date(bars.t[k] * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  if (!d) return <div className="note div-note">No RSI divergence in the last 60 days.</div>;
+  const bull = d.kind.includes("bull");
+  return (
+    <div className="note div-note">
+      <b className={bull ? "up" : "down"}>{DIV_LABEL[d.kind]}</b> · {day(d.a.k)} → {day(d.b.k)}: price {fmtPx(d.a.price)} → {fmtPx(d.b.price)}, RSI {Math.round(d.a.rsi)} → {Math.round(d.b.rsi)}.
+      {" "}{bull ? "Price made a lower low but momentum did not, often an early sign selling is fading." : "Price made a higher high but momentum did not, often an early sign buying is fading."} Wait for price to confirm.
+    </div>
+  );
+}
+
 function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: PatternHit[]; onPick: (p: PatternHit) => void; onClear: () => void; onBack: () => void }) {
   const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
@@ -572,7 +590,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
       </div>
       <div className="cmds chips" aria-label="Quick commands">
         {CMDS.map(([l, c]) => (
-          <button key={l} className="chip" type="button" onClick={() => ask(c === "analyze" ? `analyze ${selected ?? "NASDAQ:NVDA"}` : c)}>{l}</button>
+          <button key={l} className="chip" type="button" onClick={() => ask(c === "analyze" ? `analyze ${selected ?? "NASDAQ:NVDA"}` : c === "RSI divergence" ? `RSI divergence ${selected ?? "NASDAQ:NVDA"}` : c)}>{l}</button>
         ))}
       </div>
       <div className="log" ref={logEl} aria-live="polite">

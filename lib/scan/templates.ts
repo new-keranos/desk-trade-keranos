@@ -37,7 +37,15 @@ export const TEMPLATES: Template[] = [
     anchors: [[0, 0.1], [0.15, 0.4], [0.3, 0.2], [0.5, 0.65], [0.65, 0.45], [0.85, 0.9], [1, 0.7]] },
   { id: "descending_channel", name: "Falling channel", thai: "ช่องขาลง", bias: "bearish",
     anchors: [[0, 1], [0.15, 0.62], [0.3, 0.82], [0.5, 0.38], [0.65, 0.58], [0.85, 0.12], [1, 0.32]] },
+  // Price shape only; the point of these is that RSI moves the other way (drawn in the RSI panel).
+  { id: "rsi_bullish_divergence", name: "RSI bullish divergence", thai: "RSI แยกทางขาขึ้น", bias: "bullish",
+    anchors: [[0, 1], [0.35, 0.15], [0.6, 0.55], [0.85, 0], [1, 0.3]] },
+  { id: "rsi_bearish_divergence", name: "RSI bearish divergence", thai: "RSI แยกทางขาลง", bias: "bearish",
+    anchors: [[0, 0], [0.35, 0.85], [0.6, 0.45], [0.85, 1], [1, 0.7]] },
 ];
+
+/** Templates judged on RSI against price rather than on price shape alone. */
+export const isDivergence = (id?: string) => !!id && id.startsWith("rsi_");
 
 export const templateById = (id: string) => TEMPLATES.find((t) => t.id === id);
 

@@ -4,7 +4,8 @@ import type { ModelChoice } from "../nova/config";
 import { chartImage, type ChartRow } from "./chart";
 import { askJson, type RefImage } from "./llm";
 import type { Length } from "./match";
-import type { Template } from "./templates";
+import { findDivergences, rsi } from "./indicators";
+import { isDivergence, type Template } from "./templates";
 
 // The AI reads each stock's daily bars and decides whether the chosen pattern is there.
 // No shape maths: the model looks at the numbers the way an analyst reads a chart, and marks the
@@ -39,11 +40,13 @@ const DEFINITIONS: Record<string, string> = {
   falling_wedge: "Falling wedge: lower highs and lower lows inside two falling lines that converge (the range narrows), usually resolving upward.",
   rising_wedge: "Rising wedge: higher highs and higher lows inside two rising lines that converge (the range narrows), usually resolving downward.",
   ascending_channel: "Rising channel: price moving up between two roughly parallel rising lines, each touched at least twice (higher highs on the upper line, higher lows on the lower line).",
+  rsi_bullish_divergence: "RSI bullish divergence: two swing lows 5-60 trading days apart where price makes a LOWER low (or about equal) but RSI 14 makes a clearly HIGHER low (3+ points), the second low within the last 15 rows; strongest when the first RSI low was near or below 30 and price is starting to turn up. Mark the two price lows as points labelled \"ก้น 1\" and \"ก้น 2\", and one line role \"lower\" labelled \"ราคา\" joining them. breakout: the high between the two lows.",
+  rsi_bearish_divergence: "RSI bearish divergence: two swing highs 5-60 trading days apart where price makes a HIGHER high (or about equal) but RSI 14 makes a clearly LOWER high (3+ points), the second high within the last 15 rows; strongest when the first RSI high was near or above 70 and price is starting to turn down. Mark the two price highs as points labelled \"ยอด 1\" and \"ยอด 2\", and one line role \"upper\" labelled \"ราคา\" joining them. breakout: the low between the two highs (a break below confirms).",
   descending_channel: "Falling channel: price moving down between two roughly parallel falling lines, each touched at least twice (lower highs on the upper line, lower lows on the lower line).",
 };
 
 const SYSTEM = `You are a senior technical analyst who reads daily price charts for chart patterns.
-You are given daily bars as rows "i,high,low,close,vol" (i is the row number, oldest first; vol is the row's volume relative to the stock's average, 1.0 = normal) for several stocks.
+You are given daily bars as rows "i,high,low,close,vol,rsi" (i is the row number, oldest first; vol is the row's volume relative to the stock's average, 1.0 = normal; rsi is RSI 14 at the row's close) for several stocks.
 Each stock also has a "Swings" line: its swing highs (H) and lows (L) as row:price, found by code with a minimum move. Use them as the candidate turning points and check the pattern against their sequence; small wiggles between swings are noise. Use vol where the pattern needs it (volume drying up in a base, expanding on a breakout).
 Judge each stock on its own: does the requested pattern appear, finished recently or still forming at the latest bar? It must end within the last 15 rows.
 Be strict, like a professional: proportions matter (similar levels where the pattern needs them, real depth, enough touches on each line). Do not force a match; most stocks will not match.
@@ -117,17 +120,23 @@ export function rowsFor(b: Bars, length: Length) {
   const { days, step } = VIEW[length];
   const from = Math.max(0, b.c.length - days);
   const avgV = b.v?.length ? b.v.slice(from).reduce((x, y) => x + y, 0) / (b.c.length - from) : 0;
+  const r14 = rsi(b.c);
   const lines: string[] = [], idx: number[] = [], rows: ChartRow[] = [];
   for (let k = from; k < b.c.length; k += step) {
     const e = Math.min(b.c.length, k + step);
     const h = Math.max(...b.h.slice(k, e)), l = Math.min(...b.l.slice(k, e));
     const v = b.v?.length ? b.v.slice(k, e).reduce((x, y) => x + y, 0) : undefined;
     const rel = v != null && avgV > 0 ? (v / (avgV * (e - k))).toFixed(1) : "";
-    lines.push(`${idx.length},${sig(h)},${sig(l)},${sig(b.c[e - 1])}${rel ? "," + rel : ""}`);
+    const ri = r14[e - 1];
+    lines.push(`${idx.length},${sig(h)},${sig(l)},${sig(b.c[e - 1])},${rel}${ri != null ? "," + Math.round(ri) : ""}`);
     rows.push({ o: b.o?.[k] ?? b.c[Math.max(0, k - 1)], h, l, c: b.c[e - 1], v });
     idx.push(e - 1);
   }
-  return { text: lines.join("\n"), idx, rows, swings: swingsOf(rows, SWING_PCT[length]) };
+  // Divergences found by code, as row numbers, for the AI to confirm or reject.
+  const row = (k: number) => Math.max(0, Math.min(idx.length - 1, Math.floor((k - from) / step)));
+  const divs = findDivergences(b, { recent: days }).filter((d) => d.a.k >= from)
+    .map((d) => `${d.kind} rows ${row(d.a.k)}→${row(d.b.k)}: price ${sig(d.a.price)}→${sig(d.b.price)}, RSI ${Math.round(d.a.rsi)}→${Math.round(d.b.rsi)}`);
+  return { text: lines.join("\n"), idx, rows, swings: swingsOf(rows, SWING_PCT[length]), divs };
 }
 
 /** Zigzag swing points over the rows: a high or low that price then moved away from by at least pct %. */
@@ -179,14 +188,14 @@ function feedbackBrief(f?: Feedback[]) {
   const good = f.filter((x) => x.good), bad = f.filter((x) => !x.good);
   return `\n\nThe user reviewed earlier matches of this pattern. Match their judgement.${good.length ? `\nThey agreed with:\n${good.map((x) => `- ${x.symbol}: ${x.note}`).join("\n")}` : ""}${bad.length ? `\nThey said these were NOT the pattern, so do not match charts like them:\n${bad.map((x) => `- ${x.symbol}: ${x.note}`).join("\n")}` : ""}`;
 }
-const stockBlock = (v: View) => `### ${v.s.symbol} (${v.s.name}), ${v.idx.length} rows, last row = latest bar\nSwings: ${swingText(v.swings)}\n${v.text}`;
+const stockBlock = (v: View, divs = false) => `### ${v.s.symbol} (${v.s.name}), ${v.idx.length} rows, last row = latest bar\nSwings: ${swingText(v.swings)}${divs ? `\nRSI divergence candidates (code): ${v.divs.join("; ") || "none"}` : ""}\n${v.text}`;
 const rowNote = (step: number) => `Each row covers ${step === 1 ? "one trading day" : `${step} trading days`}.`;
 
 /** Ask the AI about one batch of stocks. Returns verdicts for the matches only. */
 export async function judgeBatch(stocks: Stock[], o: JudgeOptions): Promise<Verdict[]> {
   const views = stocks.map((s) => ({ s, ...rowsFor(s.bars, o.length) }));
   const step = VIEW[o.length].step;
-  const prompt = `${patternBrief(o.template)}${feedbackBrief(o.feedback)}\n${rowNote(step)}\n\n${views.map(stockBlock).join("\n\n")}`;
+  const prompt = `${patternBrief(o.template)}${feedbackBrief(o.feedback)}\n${rowNote(step)}\n\n${views.map((v) => stockBlock(v, isDivergence(o.template?.id))).join("\n\n")}`;
   const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, images: o.image ? [o.image] : [], schema: SCHEMA, signal: o.signal,
     label: `${o.template?.name ?? "image pattern"} · ${stocks.map((s) => s.symbol).join(", ")}` }));
   return toVerdicts(raw, views, step);
@@ -205,7 +214,7 @@ A first reader flagged ${stock.symbol} as this pattern (${first.confidence}% sur
 Verify it independently, as a strict senior reviewer. ${o.image ? "The first image is the reference pattern; the last image" : "The image"} is this stock's chart drawn from the same rows: one candle per row, the rightmost candle is the last row, faint vertical lines every 10 rows and darker ones every 50 rows (row 0 is the leftmost darker line), volume along the bottom.
 If it really is the pattern, return one result with match true, your own confidence and corrected points and lines (row numbers and prices from the rows). If not, return match false.
 
-${stockBlock(view)}`;
+${stockBlock(view, isDivergence(o.template?.id))}`;
   const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, images: [...(o.image ? [o.image] : []), chartImage(view.rows)], schema: SCHEMA, signal: o.signal,
     label: `verify ${o.template?.name ?? "image pattern"} · ${stock.symbol}` }));
   return toVerdicts(raw, [view], step)[0] ?? null;

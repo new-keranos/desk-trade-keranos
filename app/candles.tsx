@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { DIV_LABEL, findDivergences, rsi } from "@/lib/scan/indicators";
 import { createChart, CrosshairMode, LineStyle, type IChartApi, type Logical, type LogicalRange, type UTCTimestamp } from "lightweight-charts";
 
 // Candlestick chart drawn in the page with TradingView's open-source Lightweight Charts library,
@@ -11,7 +12,7 @@ import { createChart, CrosshairMode, LineStyle, type IChartApi, type Logical, ty
 
 export type Ohlcv = { t: number[]; o: number[]; h: number[]; l: number[]; c: number[]; v?: number[] };
 type At = { date: string; price: number };
-export type Overlay = { from: string; to: string; shape: number[]; label: string;
+export type Overlay = { from: string; to: string; shape: number[]; label: string; pattern?: string;
   points?: (At & { label?: string })[]; lines?: { from: At; to: At; role: "upper" | "lower" | "level"; label: string; extend: boolean }[] };
 
 const isoDay = (unix: number) => new Date(unix * 1000).toISOString().slice(0, 10);
@@ -23,7 +24,7 @@ const alpha = (hex: string, a: number) => {
   const n = parseInt(m[1], 16);
   return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 };
-const ANN = "#f6ad55", REF = "#7fd8d0", SMA50 = "#8ab4f8", SMA200 = "#c58af9", RSI = "#c58af9";
+const ANN = "#f6ad55", REF = "#7fd8d0", BULL = "#6dd58c", BEAR = "#f28b82", SMA50 = "#8ab4f8", SMA200 = "#c58af9", RSI = "#c58af9";
 const PRICE_W = 64;
 const fmt = (v: number) => (v >= 1000 ? v.toFixed(0) : v >= 100 ? v.toFixed(1) : v.toFixed(2));
 
@@ -33,19 +34,6 @@ function sma(c: number[], n: number) {
   for (let k = 0; k < c.length; k++) { s += c[k]; if (k >= n) s -= c[k - n]; out.push(k >= n - 1 ? s / n : null); }
   return out;
 }
-/** Wilder's RSI. */
-function rsi(c: number[], n = 14) {
-  const out: (number | null)[] = [null];
-  let up = 0, dn = 0;
-  for (let k = 1; k < c.length; k++) {
-    const d = c[k] - c[k - 1], u = Math.max(d, 0), w = Math.max(-d, 0);
-    if (k <= n) { up += u / n; dn += w / n; out.push(k === n ? (dn ? 100 - 100 / (1 + up / dn) : 100) : null); continue; }
-    up = (up * (n - 1) + u) / n; dn = (dn * (n - 1) + w) / n;
-    out.push(dn ? 100 - 100 / (1 + up / dn) : 100);
-  }
-  return out;
-}
-
 const SVG = "http://www.w3.org/2000/svg";
 function el(tag: string, attrs: Record<string, string | number>, text?: string) {
   const e = document.createElementNS(SVG, tag);
@@ -54,17 +42,18 @@ function el(tag: string, attrs: Record<string, string | number>, text?: string) 
   return e;
 }
 
-export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visible: number; overlay?: Overlay | null }) {
+export default function Candles({ bars, visible, overlay, divergences = false }: { bars: Ohlcv; visible: number; overlay?: Overlay | null; divergences?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const rsiBox = useRef<HTMLDivElement>(null);
   const ann = useRef<SVGSVGElement>(null);
+  const rsiAnn = useRef<SVGSVGElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const [legend, setLegend] = useState<{ s50?: number; s200?: number; rsi?: number }>({});
   const n = bars.t.length;
 
   useEffect(() => {
-    const el0 = box.current, el1 = rsiBox.current, svg = ann.current;
-    if (!el0 || !el1 || !svg || !n) return;
+    const el0 = box.current, el1 = rsiBox.current, svg = ann.current, svg2 = rsiAnn.current;
+    if (!el0 || !el1 || !svg || !svg2 || !n) return;
     const up = cssVar("--up") || "#6dd58c", down = cssVar("--down") || "#f28b82", line = cssVar("--line") || "#2f3133";
     const base = {
       autoSize: true,
@@ -135,6 +124,17 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
       for (let j = 0; j <= m; j++) ref.push([Math.round(i0 + (j / m) * (i1 - i0)), lo + s[j] * (hi - lo)]);
     }
 
+    // RSI divergences: the scanner's match (its first and last turning points), or the ones code finds on the chart.
+    type Div = { kind: keyof typeof DIV_LABEL; a: { k: number; price: number; rsi: number }; b: { k: number; price: number; rsi: number } };
+    const divs: Div[] = [];
+    if (overlay?.pattern?.startsWith("rsi_") && pts.length >= 2) {
+      const p0 = pts[0], p1 = pts[pts.length - 1];
+      if (r14[p0.k] != null && r14[p1.k] != null)
+        divs.push({ kind: overlay.pattern.includes("bear") ? "bearish" : "bullish", a: { ...p0, rsi: r14[p0.k]! }, b: { ...p1, rsi: r14[p1.k]! } });
+    } else if (divergences) {
+      divs.push(...findDivergences(bars, { recent: Math.min(n, Math.max(visible, 60)) }).slice(0, 4));
+    }
+
     // The AI's marks, redrawn in an SVG layer whenever the chart moves.
     const lineEnd = (l: (typeof lines)[number]) => (l.extend ? n - 1 + 3 : l.k2);
     const valueAt = (l: (typeof lines)[number], k: number) => l.p1 + ((l.p2 - l.p1) * (k - l.k1)) / (l.k2 - l.k1);
@@ -142,6 +142,7 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
     const draw = () => {
       frame = 0;
       svg.replaceChildren();
+      drawDivs();
       if (!drawn) return;
       const w = el0.clientWidth - chart.priceScale("right").width(), h = el0.clientHeight;
       svg.setAttribute("viewBox", `0 0 ${el0.clientWidth} ${h}`);
@@ -180,6 +181,28 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
         if (p.label) g.append(el("text", { x: q[0] + 7, y: q[1] + (high ? -8 : 18), fill: ANN, "font-size": 12, "font-weight": 600, class: "ann-t" }, `${p.label} ${fmt(p.price)}`));
       }
     };
+    const drawDivs = () => {
+      svg2.replaceChildren();
+      if (!divs.length) return;
+      const w = el0.clientWidth - chart.priceScale("right").width();
+      svg2.setAttribute("viewBox", `0 0 ${el1.clientWidth} ${el1.clientHeight}`);
+      const X1 = (k: number) => chart.timeScale().logicalToCoordinate(k as Logical), X2 = (k: number) => lower.timeScale().logicalToCoordinate(k as Logical);
+      for (const d of divs) {
+        const col = d.kind.includes("bull") ? BULL : BEAR, dash = d.kind.startsWith("hidden") ? "5 4" : "";
+        const xa = X1(d.a.k), xb = X1(d.b.k), ya = candles.priceToCoordinate(d.a.price), yb = candles.priceToCoordinate(d.b.price);
+        // A scanner match already has the AI's price line; found divergences get one here.
+        if (xa != null && xb != null && ya != null && yb != null && !overlay?.pattern?.startsWith("rsi_")) {
+          svg.append(el("line", { x1: xa, y1: ya, x2: xb, y2: yb, stroke: col, "stroke-width": 1.6, "stroke-dasharray": dash }));
+          if (xb < w) svg.append(el("text", { x: Math.min(xb, w - 4), y: yb + (d.kind.includes("bull") ? 18 : -8), fill: col, "font-size": 11, "font-weight": 600, "text-anchor": "end", class: "ann-t" }, DIV_LABEL[d.kind]));
+        }
+        const ra = X2(d.a.k), rb = X2(d.b.k), qa = rs.priceToCoordinate(d.a.rsi), qb = rs.priceToCoordinate(d.b.rsi);
+        if (ra == null || rb == null || qa == null || qb == null) continue;
+        svg2.append(el("line", { x1: ra, y1: qa, x2: rb, y2: qb, stroke: col, "stroke-width": 1.8, "stroke-dasharray": dash }));
+        for (const [x, y] of [[ra, qa], [rb, qb]]) svg2.append(el("circle", { cx: x, cy: y, r: 3.5, fill: "none", stroke: col, "stroke-width": 1.5 }));
+        svg2.append(el("text", { x: Math.min(rb + 6, el1.clientWidth - 70), y: qb + (d.kind.includes("bull") ? 14 : -6), fill: col, "font-size": 11, "font-weight": 600, class: "ann-t" },
+          `RSI ${Math.round(d.a.rsi)} → ${Math.round(d.b.rsi)}`));
+      }
+    };
     const redraw = () => { if (!frame) frame = requestAnimationFrame(draw); };
 
     // Keep the two panels on the same bars.
@@ -200,8 +223,8 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
     const first = firstK >= 0 && overlay ? Math.max(0, firstK - 25) : Math.max(0, n - visible);
     chart.timeScale().setVisibleLogicalRange({ from: first, to: Math.max(n + 3, lastK + 3) });
     redraw();
-    return () => { cancelAnimationFrame(frame); ro.disconnect(); chart.remove(); lower.remove(); chartRef.current = null; svg.replaceChildren(); };
-  }, [bars, n, overlay, visible]);
+    return () => { cancelAnimationFrame(frame); ro.disconnect(); chart.remove(); lower.remove(); chartRef.current = null; svg.replaceChildren(); svg2.replaceChildren(); };
+  }, [bars, n, overlay, visible, divergences]);
 
   return (
     <div className="candles" role="img" aria-label={`Daily candlestick chart, ${n} bars, with SMA 50, SMA 200 and RSI 14${overlay ? `, ${overlay.label} marked` : ""}`}>
@@ -216,6 +239,7 @@ export default function Candles({ bars, visible, overlay }: { bars: Ohlcv; visib
       </div>
       <div className="candles-rsi">
         <div ref={rsiBox} className="candles-pane" />
+        <svg ref={rsiAnn} className="candles-ann" aria-hidden="true" />
         <div className="candles-legend"><span style={{ color: RSI }}>RSI 14 {legend.rsi != null ? legend.rsi.toFixed(1) : "—"}</span></div>
       </div>
     </div>

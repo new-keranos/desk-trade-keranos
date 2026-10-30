@@ -275,3 +275,4 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .thumbs button[aria-pressed="true"] { filter: none; opacity: 1; border-color: var(--accent); background: var(--raised); }
 .stage.ok { color: var(--up); border-color: currentColor; }
 .hits .thumbs button { width: auto; display: inline-block; padding: 3px 8px; }
+.div-note { margin: 0; font-size: 12px; }

@@ -2,6 +2,7 @@ import "server-only";
 import type { ModelChoice } from "./config";
 import { z } from "zod";
 import { TV, type TvCaller } from "../tradingview";
+import { DIV_LABEL, findDivergences, rsi } from "../scan/indicators";
 import { runScan } from "../scan/run";
 import { templateById, TEMPLATES } from "../scan/templates";
 import { THEMES, UNIVERSES } from "../scan/universe";
@@ -24,6 +25,7 @@ Rules:
 Commands: brief (watchlist summary: movers, ratings, news, earnings this week), analyze <ticker>, compare <a> <b>, scan <style> <market>, news <ticker>, earnings <period>, dividends <market>, macro <US|TH>, alert <ticker> <above|below> <price>, watch <add|remove> <ticker>,
 pattern <pattern> <SP500|NDX|SET50|SET100> [theme] (chart-pattern scan, e.g. pattern double bottom SET100 energy).
 analyze pattern <ticker> <pattern> <from> <to> (check a scanner match: call get_pattern_bars and get_technicals, then say whether the swing points really form that pattern, the neckline or breakout level, whether price has broken out and on what volume, the level that would invalidate it, and a measured-move level to watch).
+For RSI divergence on one symbol, call get_rsi_divergence; to find stocks with one, call scan_chart_patterns with pattern rsi_bullish_divergence or rsi_bearish_divergence.
 For pattern scans, call scan_chart_patterns. Present the best 3 to 5 matches with AI confidence %, the date span, stage and breakout level, and say an AI read is a starting point, not a confirmed setup.
 If a message is not a command, answer it as a question using the same rules.
 
@@ -161,6 +163,24 @@ const defs: ToolDef[] = [
         // Each match shows in the chat as soon as the AI finds it.
         (e) => { if (e.type === "match") for (const m of e.rows) emit({ type: "step", text: `Found ${m.name}: ${t.name}, AI ${m.score}% sure` }); });
       return { pattern: t.name, bias: t.bias, checked: r.checked, note: r.next ? `${r.note ?? ""} Checked the ${r.checked} largest of ${r.total} stocks; the Pattern scanner page checks them all.`.trim() : r.note, matches: r.rows.map(({ closes: _c, points: _p, lines: _l, ...row }) => row) };
+    },
+  },
+  {
+    tool: { name: "get_rsi_divergence", description: "RSI 14 divergences on a symbol's daily chart, found from swing highs and lows: regular bullish (price lower low, RSI higher low), regular bearish (price higher high, RSI lower high) and hidden ones, within the last `days` trading days (default 90). Returns each with dates, prices and RSI values, plus the current RSI.",
+      input_schema: { type: "object", properties: { symbol: { type: "string", description: SYMBOL_DESC }, days: { type: "integer" } }, required: ["symbol"] } },
+    schema: z.object({ symbol: sym, days: z.number().int().min(20).max(250).optional() }),
+    label: (i) => `RSI divergence ${i.symbol}`,
+    run: async (i, _e, ctx) => {
+      const p = (await ctx.tv(TV.ohlcv, { symbol: i.symbol, interval: "1D", count: 320, format: "columns" })) as { bars?: { t: number[]; h: number[]; l: number[]; c: number[] } };
+      const b = p?.bars;
+      if (!b?.c?.length) throw new Error("No daily bars for that symbol.");
+      const day = (k: number) => new Date(b.t[k] * 1000).toISOString().slice(0, 10);
+      const r = rsi(b.c), now = r[r.length - 1];
+      const found = findDivergences(b, { recent: i.days ?? 90, hidden: true }).slice(0, 6).map((d) => ({
+        kind: DIV_LABEL[d.kind], from: { date: day(d.a.k), price: d.a.price, rsi: Math.round(d.a.rsi * 10) / 10 },
+        to: { date: day(d.b.k), price: d.b.price, rsi: Math.round(d.b.rsi * 10) / 10 }, bars_apart: d.b.k - d.a.k, bars_ago: b.c.length - 1 - d.b.k }));
+      return { symbol: i.symbol, last_close: b.c[b.c.length - 1], rsi_now: now != null ? Math.round(now * 10) / 10 : null, divergences: found,
+        note: found.length ? "Swing points need 2 bars after them, so the latest 2 bars can't start a new one yet. A divergence is a warning, confirmed only when price breaks the level between the two swings." : "No divergence between recent swings." };
     },
   },
   {
