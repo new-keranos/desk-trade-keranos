@@ -102,7 +102,7 @@ async function readImage(file: File): Promise<Img> {
 }
 
 /** Stocks per scan request (matches lib/scan/run.ts PAGE) and the least time between requests. */
-const PAGE_SIZE = 40, PAGE_GAP_MS = 60_000;
+const PAGE_SIZE = 20, PAGE_GAP_MS = 60_000;
 
 /** TradingView refused the account; the scan must stop, not retry. */
 class StopScan extends Error {}

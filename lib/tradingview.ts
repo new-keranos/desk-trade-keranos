@@ -53,18 +53,37 @@ type Store = { load(): Promise<Stored>; save(s: Stored): Promise<void>; clear():
 export class TvQuotaError extends TvError {
   constructor(message: string, readonly until: number) { super(message); }
 }
-const QUOTA = /TOOL_QUOTA_EXCEEDED|quota exceeded|access to MCP is suspended|rate.?limit/i;
+/** Account-level refusals: stop calling until the pause ends. */
+const QUOTA = /TOOL_QUOTA_EXCEEDED|quota exceeded|access to MCP is suspended/i;
+/** Short per-minute limits: wait and try once more. */
+const RATE = /\b429\b|rate.?limit|too many requests/i;
+/** At most this many TradingView calls a minute from one server instance, well under TradingView's ~100. */
+const PER_MINUTE = 30;
+const recent: number[] = [];
+const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
+/** Wait until a call fits under PER_MINUTE in the last 60 s, then record it. */
+async function slot() {
+  for (;;) {
+    const now = Date.now();
+    while (recent.length && now - recent[0] > 60_000) recent.shift();
+    if (recent.length < PER_MINUTE) { recent.push(now); return; }
+    await sleep(60_000 - (now - recent[0]) + 50);
+  }
+}
 /** Next 00:00 UTC, when TradingView lifts a day's suspension. */
 const nextUtcMidnight = () => { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); };
 // After a refusal, this server instance stops calling TradingView: more calls during a suspension risk a longer one.
 let blockedUntil = 0;
 export const tvBlockedUntil = () => (blockedUntil > Date.now() ? blockedUntil : 0);
 function quotaError(text: string): TvQuotaError {
-  // A per-minute limit clears in a minute; a suspension lasts until midnight UTC.
-  const until = /suspend/i.test(text) ? nextUtcMidnight() : Date.now() + 60_000;
+  // A suspension lasts until midnight UTC; any other quota refusal, an hour to be safe.
+  const until = /suspend/i.test(text) ? nextUtcMidnight() : Date.now() + 3_600_000;
   blockedUntil = Math.max(blockedUntil, until);
   return new TvQuotaError(`TradingView paused this account's MCP access until ${new Date(until).toISOString().slice(11, 16)} UTC: ${text.slice(0, 240)}`, until);
 }
+
+/** TradingView's per-minute limit; handled inside the caller by waiting and retrying once. */
+class TvRateError extends TvError {}
 
 /** Thrown when this request lost a token-refresh race to a parallel request; retrying a moment later works. */
 export class TvRetryError extends TvError {}
@@ -249,22 +268,39 @@ export async function openTv(origin: string): Promise<{ call: TvCaller; close: (
     if (err instanceof UnauthorizedError || p.authUrl) throw new TvAuthError("TradingView login expired. Connect again.");
     throw new TvError(`Could not connect to TradingView: ${(err as Error).message}`);
   }
-  const call: TvCaller = async (tool, args = {}) => {
+  const once = async (tool: string, args: Record<string, unknown>) => {
     if (tvBlockedUntil()) throw new TvQuotaError(`TradingView paused this account's MCP access until ${new Date(blockedUntil).toISOString().slice(11, 16)} UTC. The app won't call it again before then.`, blockedUntil);
+    await slot();
     let res;
     try {
       res = await client.callTool({ name: tool, arguments: args });
     } catch (err) {
       if (p.raced) throw new TvRetryError("TradingView login is refreshing. Try again in a moment.");
       if (err instanceof UnauthorizedError) throw new TvAuthError("TradingView login expired. Connect again.");
-      if (QUOTA.test((err as Error).message)) throw quotaError((err as Error).message);
-      throw new TvError(`TradingView call failed: ${(err as Error).message}`);
+      const m = (err as Error).message;
+      if (QUOTA.test(m)) throw quotaError(m);
+      if (RATE.test(m)) throw new TvRateError(m);
+      throw new TvError(`TradingView call failed: ${m}`);
     }
-    if (res.isError && QUOTA.test(textOf(res.content))) throw quotaError(textOf(res.content));
-    if (res.isError) throw new TvError(`TradingView returned an error: ${textOf(res.content).slice(0, 300)}`);
-    if (res.structuredContent !== undefined) return res.structuredContent;
     const text = textOf(res.content);
-    try { return JSON.parse(text); } catch { return text; }
+    if ((res.isError || text.includes("TOOL_QUOTA_EXCEEDED")) && QUOTA.test(text)) throw quotaError(text);
+    if (res.isError && RATE.test(text)) throw new TvRateError(text);
+    if (res.isError) throw new TvError(`TradingView returned an error: ${text.slice(0, 300)}`);
+    const out = res.structuredContent !== undefined ? res.structuredContent : (() => { try { return JSON.parse(text); } catch { return text; } })();
+    // The batch and screener tools report their own 429s as success: false.
+    if ((out as { success?: boolean })?.success === false && RATE.test(JSON.stringify(out).slice(0, 2000))) throw new TvRateError(JSON.stringify(out).slice(0, 300));
+    return out;
+  };
+  // A per-minute limit: wait a minute and try once more. A second refusal pauses this instance for an hour.
+  const call: TvCaller = async (tool, args = {}) => {
+    try { return await once(tool, args); } catch (err) {
+      if (!(err instanceof TvRateError)) throw err;
+      await sleep(61_000);
+      try { return await once(tool, args); } catch (again) {
+        if (again instanceof TvRateError) throw quotaError(`rate limit twice in a row: ${again.message}`);
+        throw again;
+      }
+    }
   };
   return { call, close: () => client.close().catch(() => {}) };
 }

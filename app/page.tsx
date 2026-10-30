@@ -33,13 +33,27 @@ function ago(unix: number) {
 }
 const CONDITION_WORD: Record<string, string> = { cross_up: "crosses above", cross_down: "crosses below", cross: "crosses", greater: "is above", less: "is below" };
 
-async function tv<T = any>(tool: string, input: Record<string, unknown> = {}, attempt = 0): Promise<T> {
+// The same read asked again within 30 s (panels mounting twice, quick re-clicks) shares one TradingView call.
+const READ_TTL = 30_000;
+const reads = new Map<string, { at: number; p: Promise<unknown> }>();
+function tv<T = any>(tool: string, input: Record<string, unknown> = {}): Promise<T> {
+  // A change makes earlier reads stale.
+  if (/create|add-to|remove-from|update|delete/.test(tool)) { reads.clear(); return tvCall<T>(tool, input); }
+  const k = tool + JSON.stringify(input), hit = reads.get(k);
+  if (hit && Date.now() - hit.at < READ_TTL) return hit.p as Promise<T>;
+  const p = tvCall<T>(tool, input);
+  reads.set(k, { at: Date.now(), p });
+  p.catch(() => reads.delete(k));
+  return p;
+}
+
+async function tvCall<T = any>(tool: string, input: Record<string, unknown> = {}, attempt = 0): Promise<T> {
   const until = tvBlocked();
   if (until) throw new Error(blockedText(until));
   const r = await fetch("/api/tv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }) });
   const j = await r.json().catch(() => ({}));
   // Several panels load at once; when the TradingView token expires one request refreshes it and the others retry.
-  if (r.status === 503 && j.retry && attempt < 3) { await new Promise((ok) => setTimeout(ok, 900 * (attempt + 1))); return tv<T>(tool, input, attempt + 1); }
+  if (r.status === 503 && j.retry && attempt < 3) { await new Promise((ok) => setTimeout(ok, 900 * (attempt + 1))); return tvCall<T>(tool, input, attempt + 1); }
   if (r.status === 401) { location.href = "/login"; throw new Error("Signed out"); }
   if (r.status === 429 && j.quota) { blockTv(j.until); throw new Error(j.error); }
   if (r.status === 409 && j.connect) window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));

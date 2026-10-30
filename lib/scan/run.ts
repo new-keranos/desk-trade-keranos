@@ -6,17 +6,19 @@ import { judgeBatch, verifyMatch, type Bars, type Feedback, type Stock, type Ver
 import { AiBusy, aiReason, type RefImage } from "./llm";
 import { resample, type Length } from "./match";
 import type { Template } from "./templates";
+import { rank, snapshots } from "./prefilter";
 import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "./universe";
 
-/** TradingView allows about 100 tool calls a minute, so one request checks a page of this many stocks (largest first)
- * and the browser asks for the next page half a minute later until the whole market is done.
- * Small pages also keep each request well inside the server's time limit. */
-export const PAGE = 40;
+/** Charts fetched per request; the browser asks for the next page a minute later. Small pages keep TradingView
+ * calls spread out and each request well inside the server's time limit. */
+export const PAGE = 20;
 /** Stop starting AI work this long into a request, so it returns its results before the 300 s limit cuts it off. */
 const BUDGET_MS = 230_000;
-/** Most stocks one scan checks, largest first. TradingView suspended an account after full S&P 500 scans
- * (about 500 chart calls in a few minutes), so bigger markets need a theme to narrow them. */
+/** Most stocks one scan reads quote data for (largest first), 50 per get_symbol_data_batch call.
+ * TradingView suspended an account after full S&P 500 scans (about 500 chart calls in a few minutes). */
 export const MAX_STOCKS = 200;
+/** Most charts (one get_ohlcv call each) one scan fetches: the best fits from the quote data. */
+export const MAX_CHARTS = 60;
 const CONCURRENCY = 3;
 const BARS = 260;
 /** Stocks per AI request, and AI requests at once (the Gemini free tier allows only a few a minute). */
@@ -59,9 +61,13 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const where = UNIVERSES[o.universe].label + (o.themes.length ? " · " + o.themes.map((t) => THEMES[t].label).join(", ") : "");
   emit({ type: "status", text: `Loading ${where} from TradingView` });
   const { stocks: all } = await cachedJson(`universe:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
-  const stocks = all.slice(0, MAX_STOCKS);
+  const members = all.slice(0, MAX_STOCKS);
+  if (members.length) emit({ type: "status", text: `Reading quote data for ${members.length} stocks` });
+  const snaps = members.length ? await cachedJson(`snap:${o.universe}:${o.themes.join(",")}`, () => snapshots(o.tv, members.map((s) => s.symbol))) : {};
+  const likely = rank(members, snaps, o.template?.id);
+  const stocks = likely.slice(0, MAX_CHARTS);
   if (!stocks.length) {
-    const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: 0, note: `No stocks in ${where}.` };
+    const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: 0, note: members.length ? `None of the ${members.length} stocks in ${where} fit ${o.template?.name ?? "the pattern"} from their quote data.` : `No stocks in ${where}.` };
     emit(r);
     return r;
   }
@@ -69,7 +75,10 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const list = stocks.slice(offset, offset + PAGE);
   const nextPage = offset + PAGE < stocks.length ? offset + PAGE : undefined;
   const notes: string[] = [];
-  if (all.length > MAX_STOCKS && offset === 0) notes.push(`Checked the ${MAX_STOCKS} largest of ${all.length} stocks, to stay inside TradingView's limits. Pick a theme to check the others.`);
+  if (offset === 0) {
+    if (all.length > MAX_STOCKS) notes.push(`Read the ${MAX_STOCKS} largest of ${all.length} stocks, to stay inside TradingView's limits. Pick a theme to reach the others.`);
+    if (stocks.length < members.length) notes.push(`Quote data narrowed ${members.length} stocks to ${likely.length} that could fit this pattern; the ${stocks.length} best fits were checked chart by chart.`);
+  }
   emit({ type: "page", total: stocks.length, next: nextPage });
 
   // 1. Daily bars from TradingView.
