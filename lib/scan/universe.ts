@@ -1,5 +1,6 @@
 import "server-only";
 import { TV, type TvCaller } from "../tradingview";
+import { SNAP_COLS, snapOf, type Snap } from "./prefilter";
 
 // Markets the scanner can search, as TradingView screener arguments.
 export const UNIVERSES = {
@@ -34,14 +35,23 @@ function inTheme(s: Stock, t: Theme): boolean {
   return !!((s.sector && t.sectors?.includes(s.sector)) || (s.industry && t.industries?.includes(s.industry)));
 }
 
-/** Members of the universe that match any of the themes (all members when no theme), largest first. */
-export async function loadUniverse(tv: TvCaller, universe: UniverseId, themes: ThemeId[]): Promise<{ stocks: Stock[]; total: number }> {
+const BASE_COLS = ["name", "description", "close", "change", "sector", "industry", "market_cap_basic"];
+
+/** Members of the universe that match any of the themes (all members when no theme), largest first, with each
+ * one's prefilter snapshot. One run_screener call reads the whole market and the snapshots together. */
+export async function loadUniverse(tv: TvCaller, universe: UniverseId, themes: ThemeId[]): Promise<{ stocks: Stock[]; total: number; snaps: Record<string, Snap> }> {
   const res = (await tv(TV.screener, {
     ...UNIVERSES[universe].args,
-    columns: ["name", "description", "close", "change", "sector", "industry", "market_cap_basic"],
-    sort_by: "market_cap_basic", sort_order: "desc", limit: 600,
-  })) as { data?: { rows?: Stock[] } };
+    columns: [...new Set([...BASE_COLS, ...SNAP_COLS])],
+    sort_by: "market_cap_basic", sort_order: "desc", limit: 1000,
+  })) as { data?: { rows?: (Stock & Record<string, unknown>)[] } };
   const rows = (res?.data?.rows ?? []).filter((r) => r.symbol);
-  const stocks = themes.length ? rows.filter((s) => themes.some((t) => inTheme(s, THEMES[t]))) : rows;
-  return { stocks, total: rows.length };
+  const picked = themes.length ? rows.filter((s) => themes.some((t) => inTheme(s, THEMES[t]))) : rows;
+  const snaps: Record<string, Snap> = {};
+  const stocks: Stock[] = picked.map((r) => {
+    snaps[r.symbol] = snapOf(r);
+    const { symbol, name, description, close, change, sector, industry, market_cap_basic } = r;
+    return { symbol, name, description, close, change, sector, industry, market_cap_basic };
+  });
+  return { stocks, total: rows.length, snaps };
 }

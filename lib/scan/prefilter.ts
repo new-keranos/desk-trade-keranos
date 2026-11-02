@@ -1,24 +1,20 @@
-import "server-only";
-import { TV, type TvCaller } from "../tradingview";
 import type { Stock } from "./universe";
 
-// Before any chart is fetched, one get_symbol_data_batch call per 50 stocks reads a snapshot of each
-// (price against its 1/3/6-month range, moving averages, RSI, recent performance). Stocks that can't
+// Before any chart is fetched, every stock in the market gets a snapshot (price against its 1/3/6-month
+// range, moving average, RSI, recent performance). The snapshot columns ride on the run_screener call that
+// lists the market, so the whole market (up to 1,000 stocks) costs one TradingView call. Stocks that can't
 // hold the pattern right now are left out, so only the likely ones cost a chart call each.
 
-const COLS = ["close", "RSI", "SMA50", "Perf.1M", "Perf.3M", "High.3M", "Low.3M", "High.6M", "Low.6M"];
-const BATCH = 50;
+export const SNAP_COLS = ["close", "RSI", "SMA50", "Perf.1M", "Perf.3M", "High.3M", "Low.3M", "High.6M", "Low.6M"] as const;
 
 export type Snap = { close?: number; RSI?: number; SMA50?: number; "Perf.1M"?: number; "Perf.3M"?: number;
   "High.3M"?: number; "Low.3M"?: number; "High.6M"?: number; "Low.6M"?: number };
 
-export async function snapshots(tv: TvCaller, symbols: string[]): Promise<Record<string, Snap>> {
-  const out: Record<string, Snap> = {};
-  for (let k = 0; k < symbols.length; k += BATCH) {
-    const r = (await tv(TV.quotes, { symbols: symbols.slice(k, k + BATCH), columns: COLS })) as { data?: Record<string, Snap> };
-    Object.assign(out, r?.data ?? {});
-  }
-  return out;
+/** The snapshot columns of one screener row. */
+export function snapOf(row: Record<string, unknown>): Snap {
+  const out: Record<string, number> = {};
+  for (const k of SNAP_COLS) if (typeof row[k] === "number") out[k] = row[k] as number;
+  return out as Snap;
 }
 
 const pos = (s: Snap, hi?: number, lo?: number) => (s.close != null && hi != null && lo != null && hi > lo ? (s.close - lo) / (hi - lo) : undefined);
