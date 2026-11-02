@@ -227,6 +227,8 @@ class StoreProvider implements OAuthClientProvider {
     await this.persist();
   }
   get expectedState() { return this.store.state; }
+  /** Forget the tokens (keeping the app's registration) so the next auth() starts a fresh browser login. */
+  async dropTokens() { delete this.store.tokens; delete this.store.verifier; await this.persist(); }
 }
 
 async function provider(origin: string): Promise<StoreProvider> {
@@ -235,8 +237,10 @@ async function provider(origin: string): Promise<StoreProvider> {
 }
 
 /** Start the OAuth flow. Returns the TradingView login URL, or null when already connected. */
-export async function beginTvLogin(origin: string): Promise<URL | null> {
+export async function beginTvLogin(origin: string, fresh = false): Promise<URL | null> {
   const p = await provider(origin);
+  // A login stuck refreshing (its refresh token no longer works) needs a fresh sign-in, not another refresh.
+  if (fresh) await p.dropTokens();
   const result = await auth(p, { serverUrl: TV_MCP_URL });
   return result === "REDIRECT" ? p.authUrl : null;
 }

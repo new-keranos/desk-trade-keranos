@@ -5,7 +5,7 @@ import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
 import Scanner, { Thumbs, type PatternHit } from "./scanner";
 import Candles, { type Ohlcv } from "./candles";
 import { currentModel, ModelSelect } from "./model";
-import { blockedText, blockTv, tvBlocked } from "./tvblock";
+import { askRelogin, blockedText, blockTv, postWithRelogin, tvBlocked } from "./tvblock";
 import { DIV_LABEL, findDivergences } from "@/lib/scan/indicators";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
 
@@ -54,6 +54,8 @@ async function tvCall<T = any>(tool: string, input: Record<string, unknown> = {}
   const j = await r.json().catch(() => ({}));
   // Several panels load at once; when the TradingView token expires one request refreshes it and the others retry.
   if (r.status === 503 && j.retry && attempt < 3) { await new Promise((ok) => setTimeout(ok, 900 * (attempt + 1))); return tvCall<T>(tool, input, attempt + 1); }
+  // Still refreshing after three tries: the refresh token no longer works, so offer a fresh login.
+  if (r.status === 503 && j.retry) { askRelogin(); throw new Error("TradingView login didn't refresh. Log in to TradingView again."); }
   if (r.status === 401) { location.href = "/login"; throw new Error("Signed out"); }
   if (r.status === 429 && j.quota) { blockTv(j.until); throw new Error(j.error); }
   if (r.status === 409 && j.connect) window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
@@ -91,7 +93,7 @@ export default function Desk() {
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [filter, setFilter] = useState<"all" | Market>("all");
   const [selected, setSelected] = useState<string | null>(null);
-  const [connect, setConnect] = useState<string | null>(null);
+  const [connect, setConnect] = useState<{ text: string; fresh?: boolean } | null>(null);
   const [view, setView] = useState<"desk" | "scanner">("desk");
   const [pattern, setPattern] = useState<PatternHit | null>(null);
   // Every match the scan found on the same stock, so they can be shown one at a time.
@@ -99,8 +101,11 @@ export default function Desk() {
 
   useEffect(() => {
     const err = new URLSearchParams(location.search).get("tv_error");
-    if (err) { setConnect(err); history.replaceState(null, "", "/"); }
-    const on = (e: Event) => setConnect((e as CustomEvent<string>).detail || "Connect TradingView to load your data.");
+    if (err) { setConnect({ text: err }); history.replaceState(null, "", "/"); }
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<string | { text: string; fresh?: boolean }>).detail;
+      setConnect(typeof d === "object" && d ? d : { text: d || "Connect TradingView to load your data." });
+    };
     window.addEventListener("nova:tv-connect", on);
     return () => window.removeEventListener("nova:tv-connect", on);
   }, []);
@@ -164,8 +169,9 @@ export default function Desk() {
         </header>
         {connect && (
           <div className="connect-bar" role="alert">
-            <span>{connect}</span>
-            <a className="btn primary" href="/api/tv/connect">Connect TradingView</a>
+            <span>{connect.text}</span>
+            {connect.fresh ? <a className="btn primary" href="/api/tv/connect?fresh=1">Log in to TradingView again</a>
+              : <a className="btn primary" href="/api/tv/connect">Connect TradingView</a>}
           </div>
         )}
         <div className="content">
@@ -533,7 +539,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
     ctl.current = new AbortController();
     let answer = "";
     try {
-      const res = await fetch("/api/nova", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
+      const res = await postWithRelogin("/api/nova", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
         body: JSON.stringify({ messages: history, effort, watchlist: symbols, selected, ai: currentModel() }) });
       if (res.status === 401) { location.href = "/login"; return; }
       if (res.status === 409) {
@@ -541,6 +547,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
         window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
         throw new Error(j.error || "Connect TradingView first.");
       }
+      if (res.status === 503) throw new Error((await res.json().catch(() => ({}))).error || "TradingView login didn't refresh. Log in to TradingView again.");
       if (!res.ok || !res.body) throw new Error("Agent is unavailable right now.");
       const reader = res.body.getReader();
       const dec = new TextDecoder();

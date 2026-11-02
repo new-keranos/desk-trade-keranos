@@ -5,7 +5,7 @@ import { resolveChoice } from "@/lib/nova/config";
 import { templateById } from "@/lib/scan/templates";
 import { THEMES, UNIVERSES, type ThemeId, type UniverseId } from "@/lib/scan/universe";
 import { flushTelemetry, traceRequest } from "@/lib/telemetry";
-import { openTv, originOf, TvAuthError, TvQuotaError } from "@/lib/tradingview";
+import { openTv, originOf, TvAuthError, TvQuotaError, TvRetryError } from "@/lib/tradingview";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -44,6 +44,7 @@ export async function POST(req: Request) {
     tv = await openTv(originOf(req));
   } catch (err) {
     if (err instanceof TvQuotaError) return Response.json({ error: err.message, quota: true, until: err.until }, { status: 429 });
+    if (err instanceof TvRetryError) return Response.json({ error: "TradingView login didn't refresh. Log in to TradingView again.", relogin: true }, { status: 503 });
     return Response.json({ error: (err as Error).message, connect: err instanceof TvAuthError }, { status: err instanceof TvAuthError ? 409 : 502 });
   }
 

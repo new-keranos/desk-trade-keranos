@@ -5,7 +5,7 @@ import { after } from "next/server";
 import OpenAI from "openai";
 import { resolveChoice, runNova, type NovaEvent } from "@/lib/nova";
 import { flushTelemetry, traceRequest } from "@/lib/telemetry";
-import { openTv, originOf, TvAuthError } from "@/lib/tradingview";
+import { openTv, originOf, TvAuthError, TvRetryError } from "@/lib/tradingview";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -34,6 +34,7 @@ export async function POST(req: Request) {
   try {
     tv = await openTv(originOf(req));
   } catch (err) {
+    if (err instanceof TvRetryError) return Response.json({ error: "TradingView login didn't refresh. Log in to TradingView again.", relogin: true }, { status: 503 });
     return Response.json({ error: (err as Error).message, connect: err instanceof TvAuthError }, { status: err instanceof TvAuthError ? 409 : 502 });
   }
 

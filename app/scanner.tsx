@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cls, fmtPct, fmtPx, market } from "./format";
 import { currentModel, currentVerify, ModelSelect, VerifySelect } from "./model";
-import { blockedText, blockTv, tvBlocked } from "./tvblock";
+import { blockedText, blockTv, postWithRelogin, tvBlocked } from "./tvblock";
 import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 
@@ -123,7 +123,7 @@ const mergeRows = (have: Row[], add: Row[]) => [...have.filter((x) => !add.some(
 
 /** One page of a scan, streamed. Resolves with the page's final results, or null when the server reported an error. */
 async function scanPage(body: object, signal: AbortSignal, on: (ev: any) => void): Promise<{ rows: Row[]; checked: number; note?: string; total: number; next?: number } | null> {
-  const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify(body) });
+  const res = await postWithRelogin("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify(body) });
   if (res.status === 401) { location.href = "/login"; return null; }
   if (res.status === 429) {
     const j = await res.json().catch(() => ({}));
@@ -135,6 +135,7 @@ async function scanPage(body: object, signal: AbortSignal, on: (ev: any) => void
     window.dispatchEvent(new CustomEvent("nova:tv-connect", { detail: j.error }));
     throw new Error(j.error || "Connect TradingView first.");
   }
+  if (res.status === 503) throw new StopScan((await res.json().catch(() => ({}))).error || "TradingView login didn't refresh. Log in to TradingView again.");
   if (!res.ok || !res.body) throw new Error("The scanner is unavailable right now.");
   const reader = res.body.getReader();
   const dec = new TextDecoder();
