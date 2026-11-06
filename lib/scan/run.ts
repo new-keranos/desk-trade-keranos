@@ -7,6 +7,8 @@ import { AiBusy, aiReason, type RefImage } from "./llm";
 import { resample, type Length } from "./match";
 import type { Template } from "./templates";
 import { rank } from "./prefilter";
+import { DETECTORS, detect, type Detection, type TrackState } from "./pivots";
+import { advance, forget, loadStates, saveStates, seedFromBars, seedsToday, SEEDS_PER_DAY } from "./tracker";
 import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "./universe";
 
 /** Charts fetched per request; the browser asks for the next page a minute later. Small pages keep TradingView
@@ -23,6 +25,9 @@ const BARS = 260;
 const BATCH = 6;
 const AI_CONCURRENCY = 2;
 const MIN_CONFIDENCE = 70;
+/** Pattern-detector score a tracked stock needs before the AI reads its chart, and most such stocks per scan. */
+const MIN_DETECT = 70;
+const MAX_DETECTED = 20;
 const BUSY_WAIT_MS = 35_000;
 
 export type ScanPoint = { k: number; date: string; price: number; label?: string };
@@ -59,8 +64,10 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const where = UNIVERSES[o.universe].label + (o.themes.length ? " · " + o.themes.map((t) => THEMES[t].label).join(", ") : "");
   emit({ type: "status", text: `Loading ${where} from TradingView` });
   // One run_screener call lists the market with each stock's quote snapshot (cached 4 h).
-  const { stocks: members, snaps } = await cachedJson(`universe2:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
+  const { stocks: members, snaps, prev } = await cachedJson(`universe3:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
   const likely = rank(members, snaps, o.template?.id);
+  const tracked = !o.image && !!o.template && !!DETECTORS[o.template.id] && process.env.PATTERN_TRACKER !== "0";
+  if (tracked && members.length) return runTracked(o, emit, { members, likely, prev, where, deadline });
   const stocks = likely.slice(0, MAX_CHARTS);
   if (!stocks.length) {
     const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: 0, note: members.length ? `None of the ${members.length} stocks in ${where} fit ${o.template?.name ?? "the pattern"} from their quote data.` : `No stocks in ${where}.` };
@@ -76,6 +83,84 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   }
   emit({ type: "page", total: stocks.length, next: nextPage });
 
+  return readCharts(o, emit, { list, total: stocks.length, next: nextPage, notes, deadline });
+}
+
+type Member = Awaited<ReturnType<typeof loadUniverse>>["stocks"][number];
+type Plan = { list: Member[]; total: number; next?: number; notes: string[]; deadline: number;
+  /** Runs on the loaded charts before the AI reads them; returns the ones the AI should read. */
+  pick?: (loaded: Stock[]) => Promise<Stock[]> };
+
+/** Pattern-detector scan: every stock in the market keeps a small pivot state, brought up to date from the
+ * screener call that listed the market. Only stocks whose state scores a match cost a chart call and an AI read.
+ * Stocks without a state yet are seeded from their chart, a page at a time (and at most SEEDS_PER_DAY a day). */
+async function runTracked(o: ScanOptions, emit: (e: ScanEvent) => void, c: { members: Member[]; likely: Member[]; prev: Record<string, Awaited<ReturnType<typeof loadUniverse>>["prev"][string]>; where: string; deadline: number }) {
+  const id = o.template!.id, offset = Math.max(0, o.offset ?? 0);
+  emit({ type: "status", text: "Updating pattern tracker from the screener" });
+  const states = await loadStates(c.members.map((m) => m.symbol));
+  const changed = new Map<string, TrackState>(), stale: string[] = [];
+  for (const [sym, st] of states) {
+    const p = c.prev[sym];
+    if (!p) continue;
+    const r = advance(st, p);
+    if (r === "added") changed.set(sym, st);
+    else if (r === "stale") { stale.push(sym); states.delete(sym); }
+  }
+  await saveStates(changed);
+  if (stale.length) await forget(stale);
+
+  // Matches among stocks already tracked: reported on the first page only.
+  const found = new Map<string, Detection>();
+  if (offset === 0) {
+    for (const m of c.members) {
+      const st = states.get(m.symbol), d = st && detect(st, id);
+      if (d && d.score >= MIN_DETECT) found.set(m.symbol, d);
+    }
+  }
+  const hits = [...found].sort((a, b) => b[1].score - a[1].score).slice(0, MAX_DETECTED).map(([s]) => s);
+  const bySymbol = new Map(c.members.map((m) => [m.symbol, m]));
+  // Stocks still to seed: the likely fits from the quote data first, then the rest of the market.
+  const order = [...c.likely, ...c.members.filter((m) => !c.likely.includes(m))];
+  const unseeded = order.filter((m) => !states.has(m.symbol));
+  const budget = Math.max(0, SEEDS_PER_DAY - (await seedsToday()));
+  const toSeed = unseeded.slice(0, Math.min(budget, Math.max(0, PAGE - hits.length)));
+  const list = [...hits.map((s) => bySymbol.get(s)!), ...toSeed];
+  const more = Math.min(unseeded.length, budget) - toSeed.length;
+  const next = more > 0 ? offset + PAGE : undefined;
+  const notes: string[] = [];
+  if (offset === 0) {
+    notes.push(`Pattern detector: ${states.size} of ${c.members.length} stocks in ${c.where} are tracked; ${found.size} look like ${o.template!.name} (score ${MIN_DETECT}+)${found.size > hits.length ? `, the best ${hits.length} were checked` : ""}.`);
+    if (unseeded.length) notes.push(`${unseeded.length} stocks aren't tracked yet; ${Math.min(unseeded.length, budget)} are being added in this scan${unseeded.length > budget ? ` (up to ${SEEDS_PER_DAY} a day, the rest on later days)` : ""}.`);
+    if (stale.length) notes.push(`${stale.length} stocks had a gap in their daily bars and will be added again.`);
+  }
+  const total = offset + list.length + Math.max(0, more);
+  emit({ type: "page", total, next });
+  emit({ type: "status", text: `${found.size} tracked stocks match; adding ${toSeed.length} new ones` });
+  if (!list.length) {
+    const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: offset, note: notes.join(" ") || `No stock in ${c.where} looks like ${o.template!.name} right now.` };
+    emit(r);
+    return r;
+  }
+  const seedSet = new Set(toSeed.map((m) => m.symbol));
+  return readCharts(o, emit, { list, total, next, notes, deadline: c.deadline,
+    pick: async (loaded) => {
+      const seeded = new Map<string, TrackState>();
+      const keep = loaded.filter((s) => {
+        if (!seedSet.has(s.symbol)) return true;
+        const st = seedFromBars(s.bars, c.prev[s.symbol]);
+        if (!st) return false;
+        seeded.set(s.symbol, st);
+        const d = detect(st, id);
+        return !!d && d.score >= MIN_DETECT;
+      });
+      await saveStates(seeded);
+      await seedsToday(seeded.size);
+      return keep;
+    } });
+}
+
+async function readCharts(o: ScanOptions, emit: (e: ScanEvent) => void, plan: Plan): Promise<Extract<ScanEvent, { type: "results" }>> {
+  const { list, notes, deadline } = plan, stocks = { length: plan.total }, nextPage = plan.next, offset = Math.max(0, o.offset ?? 0);
   // 1. Daily bars from TradingView.
   const loaded: Stock[] = [];
   let done = 0, skipped = 0, next = 0;
@@ -105,6 +190,7 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, fetcher));
   if (refused) throw refused;
+  if (plan.pick) { const keep = await plan.pick(loaded); loaded.splice(0, loaded.length, ...keep); }
   if (skipped) notes.push(`${skipped} charts couldn't be loaded, likely TradingView's per-minute limit. Wait a minute and scan again to include them.`);
 
   // AI verdicts to result rows. One stock can match more than once; a match that mostly overlaps a stronger one for the same stock is dropped.
