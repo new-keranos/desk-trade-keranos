@@ -1,6 +1,6 @@
 import "server-only";
 import type { ModelChoice } from "../nova/config";
-import { TV, TvQuotaError, type TvCaller } from "../tradingview";
+import { hasRedis, TV, TvQuotaError, type TvCaller } from "../tradingview";
 import { cachedBars, cachedJson, storeBars } from "./cache";
 import { judgeBatch, verifyMatch, type Bars, type Feedback, type Stock, type Verdict } from "./judge";
 import { AiBusy, aiReason, type RefImage } from "./llm";
@@ -66,7 +66,9 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   // One run_screener call lists the market with each stock's quote snapshot (cached 4 h).
   const { stocks: members, snaps, prev } = await cachedJson(`universe3:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
   const likely = rank(members, snaps, o.template?.id);
-  const tracked = !o.image && !!o.template && !!DETECTORS[o.template.id] && process.env.PATTERN_TRACKER !== "0";
+  // Needs Redis: on serverless hosting each request may run in a fresh instance, so states kept only in memory
+  // would be lost between pages and every stock would be seeded again and again.
+  const tracked = !o.image && !!o.template && !!DETECTORS[o.template.id] && process.env.PATTERN_TRACKER !== "0" && hasRedis();
   if (tracked && members.length) return runTracked(o, emit, { members, likely, prev, where, deadline });
   const stocks = likely.slice(0, MAX_CHARTS);
   if (!stocks.length) {
@@ -119,25 +121,30 @@ async function runTracked(o: ScanOptions, emit: (e: ScanEvent) => void, c: { mem
   }
   const hits = [...found].sort((a, b) => b[1].score - a[1].score).slice(0, MAX_DETECTED).map(([s]) => s);
   const bySymbol = new Map(c.members.map((m) => [m.symbol, m]));
-  // Stocks still to seed: the likely fits from the quote data first, then the rest of the market.
+  // Stocks still to seed: the likely fits from the quote data first, then the rest of the market. `offset` is a
+  // cursor into this fixed order, so the pages always end (at most one pass over the market), even if a state
+  // didn't stick.
   const order = [...c.likely, ...c.members.filter((m) => !c.likely.includes(m))];
   const unseeded = order.filter((m) => !states.has(m.symbol));
   const budget = Math.max(0, SEEDS_PER_DAY - (await seedsToday()));
-  const toSeed = unseeded.slice(0, Math.min(budget, Math.max(0, PAGE - hits.length)));
+  const room = Math.min(budget, Math.max(0, PAGE - hits.length));
+  const toSeed: Member[] = [];
+  let k = offset;
+  for (; k < order.length && toSeed.length < room; k++) if (!states.has(order[k].symbol)) toSeed.push(order[k]);
+  const left = order.slice(k).filter((m) => !states.has(m.symbol)).length;
+  const next = left > 0 && budget > toSeed.length ? k : undefined;
   const list = [...hits.map((s) => bySymbol.get(s)!), ...toSeed];
-  const more = Math.min(unseeded.length, budget) - toSeed.length;
-  const next = more > 0 ? offset + PAGE : undefined;
   const notes: string[] = [];
   if (offset === 0) {
     notes.push(`Pattern detector: ${states.size} of ${c.members.length} stocks in ${c.where} are tracked; ${found.size} look like ${o.template!.name} (score ${MIN_DETECT}+)${found.size > hits.length ? `, the best ${hits.length} were checked` : ""}.`);
-    if (unseeded.length) notes.push(`${unseeded.length} stocks aren't tracked yet; ${Math.min(unseeded.length, budget)} are being added in this scan${unseeded.length > budget ? ` (up to ${SEEDS_PER_DAY} a day, the rest on later days)` : ""}.`);
+    if (unseeded.length) notes.push(`${unseeded.length} stocks aren't tracked yet; up to ${Math.min(unseeded.length, budget)} are being added in this scan${unseeded.length > budget ? ` (up to ${SEEDS_PER_DAY} a day, the rest on later days)` : ""}.`);
     if (stale.length) notes.push(`${stale.length} stocks had a gap in their daily bars and will be added again.`);
   }
-  const total = offset + list.length + Math.max(0, more);
+  const total = order.length;
   emit({ type: "page", total, next });
   emit({ type: "status", text: `${found.size} tracked stocks match; adding ${toSeed.length} new ones` });
   if (!list.length) {
-    const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: offset, note: notes.join(" ") || `No stock in ${c.where} looks like ${o.template!.name} right now.` };
+    const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total, next, note: notes.join(" ") || `No stock in ${c.where} looks like ${o.template!.name} right now.` };
     emit(r);
     return r;
   }
