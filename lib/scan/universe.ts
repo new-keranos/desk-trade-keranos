@@ -1,6 +1,7 @@
 import "server-only";
 import { TV, type TvCaller } from "../tradingview";
 import { SNAP_COLS, snapOf, type Snap } from "./prefilter";
+import { PREV_COLS, prevOf, type PrevBar } from "./tracker";
 
 // Markets the scanner can search, as TradingView screener arguments.
 export const UNIVERSES = {
@@ -38,20 +39,23 @@ function inTheme(s: Stock, t: Theme): boolean {
 const BASE_COLS = ["name", "description", "close", "change", "sector", "industry", "market_cap_basic"];
 
 /** Members of the universe that match any of the themes (all members when no theme), largest first, with each
- * one's prefilter snapshot. One run_screener call reads the whole market and the snapshots together. */
-export async function loadUniverse(tv: TvCaller, universe: UniverseId, themes: ThemeId[]): Promise<{ stocks: Stock[]; total: number; snaps: Record<string, Snap> }> {
+ * one's prefilter snapshot and its last completed daily bars (for the pattern detector). One run_screener call
+ * reads the whole market and all of these together. */
+export async function loadUniverse(tv: TvCaller, universe: UniverseId, themes: ThemeId[]): Promise<{ stocks: Stock[]; total: number; snaps: Record<string, Snap>; prev: Record<string, PrevBar> }> {
   const res = (await tv(TV.screener, {
     ...UNIVERSES[universe].args,
-    columns: [...new Set([...BASE_COLS, ...SNAP_COLS])],
+    columns: [...new Set([...BASE_COLS, ...SNAP_COLS, ...PREV_COLS])],
     sort_by: "market_cap_basic", sort_order: "desc", limit: 1000,
   })) as { data?: { rows?: (Stock & Record<string, unknown>)[] } };
   const rows = (res?.data?.rows ?? []).filter((r) => r.symbol);
   const picked = themes.length ? rows.filter((s) => themes.some((t) => inTheme(s, THEMES[t]))) : rows;
-  const snaps: Record<string, Snap> = {};
+  const snaps: Record<string, Snap> = {}, prev: Record<string, PrevBar> = {};
   const stocks: Stock[] = picked.map((r) => {
     snaps[r.symbol] = snapOf(r);
+    const p = prevOf(r);
+    if (p) prev[r.symbol] = p;
     const { symbol, name, description, close, change, sector, industry, market_cap_basic } = r;
     return { symbol, name, description, close, change, sector, industry, market_cap_basic };
   });
-  return { stocks, total: rows.length, snaps };
+  return { stocks, total: rows.length, snaps, prev };
 }
