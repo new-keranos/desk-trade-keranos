@@ -16,7 +16,7 @@ type Row = { id?: string; symbol: string; name: string; description?: string; se
   by?: By; rule?: number; indicators?: { ok: boolean; text: string }[]; bt?: Bt };
 type By = "ai" | "rule" | "both";
 type Bt = { signals: number; wins: number; losses: number; open: number; avgRet: number; horizon: number };
-type Analyzer = "ai" | "rules" | "compare";
+type Analyzer = "ai" | "rules" | "compare" | "screen_ai";
 type Img = { mime: "image/jpeg"; data: string; preview: string };
 type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string; pattern?: string };
 /** A scanner match opened on the dashboard. */
@@ -82,6 +82,7 @@ const ANALYZERS: [Analyzer, string, string][] = [
   ["ai", "AI", "The AI reads each chart and judges it against the pattern"],
   ["rules", "Indicators (AI off)", "No AI: a pivot detector finds the pattern and SMA50/200, RSI, MACD and volume confirm it; past signals are backtested"],
   ["compare", "AI vs indicators", "Both read the same charts, so you can see where they agree"],
+  ["screen_ai", "Indicator screen → AI", "Screener indicators (RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume, candles) filter the whole market in one TradingView call; only the best 20 that pass get a chart and an AI read"],
 ];
 const ANALYZER_STORE = "keranos.analyzer.v1";
 const BY: Record<By, string> = { ai: "AI only", rule: "Indicators only", both: "AI + indicators" };
@@ -200,7 +201,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   const [themes, setThemes] = useState<string[]>([]);
   const [length, setLength] = useState("medium");
   const [analyzer, setAnalyzerState] = useState<Analyzer>("ai");
-  useEffect(() => { try { const v = localStorage.getItem(ANALYZER_STORE); if (v === "rules" || v === "compare") setAnalyzerState(v); } catch { /* default */ } }, []);
+  useEffect(() => { try { const v = localStorage.getItem(ANALYZER_STORE); if (v === "rules" || v === "compare" || v === "screen_ai") setAnalyzerState(v); } catch { /* default */ } }, []);
   const setAnalyzer = (v: Analyzer) => { setAnalyzerState(v); try { localStorage.setItem(ANALYZER_STORE, v); } catch { /* this tab only */ } };
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ text: string; done?: number; total?: number } | null>(null);
@@ -306,7 +307,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   return (
     <section className="pane scanner" aria-labelledby="scan-h" hidden={hidden}
       onPaste={(e) => { const f = Array.from(e.clipboardData.files).find((x) => x.type.startsWith("image/")); if (f) pick(f); }}>
-      <div className="pane-h"><h2 id="scan-h">Find stocks by chart pattern</h2><span className="label">Daily charts · {mode === "rules" ? "read by indicators, AI off" : mode === "compare" ? "AI vs indicators" : "read by AI"}</span></div>
+      <div className="pane-h"><h2 id="scan-h">Find stocks by chart pattern</h2><span className="label">Daily charts · {mode === "rules" ? "read by indicators, AI off" : mode === "compare" ? "AI vs indicators" : mode === "screen_ai" ? "indicator screen, then AI" : "read by AI"}</span></div>
 
       <div className="scan-sec">
         <div className="label">Pattern</div>
@@ -389,7 +390,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
               <div className="muted" style={{ fontSize: 12 }}>{uniLabel(result.universe)} · {themeLabel(result.themes)} · {busy && result.total ? `${result.checked} of ${result.total} stocks checked so far` : `${result.checked} charts checked`} · saved {fmtWhen(result.at)}</div></div>
             {result.rows.length > 0 && <button type="button" className="btn" onClick={() => downloadCsv(result)}>Download CSV</button>}
           </div>
-          {(result.backtest || result.compare || (result.analyzer && result.analyzer !== "ai")) && <Accuracy r={result} votes={votes} />}
+          {(result.backtest || result.compare || result.analyzer === "rules" || result.analyzer === "compare") && <Accuracy r={result} votes={votes} />}
           {result.note && <div className="note">{result.note}</div>}
           {!result.rows.length && <div className="note">{busy ? "No matches yet. They appear here as each batch of charts is read." : result.analyzer === "rules" ? "The indicator rules didn't score any chart 70 or more. Try another pattern or market." : <>The AI wasn&apos;t at least 70% sure about any chart. Try another pattern length, market or theme.</>}</div>}
           <ul className="hits">
@@ -399,7 +400,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
               <li key={r.id} className="hit">
                 <button type="button" onClick={() => onOpen(r, same)} aria-label={`Open ${r.symbol}, ${r.by === "rule" ? "indicator score" : "AI"} ${r.score}${r.by === "rule" ? "" : "% sure"}`}>
                   <span className="hit-t"><b>{r.name}</b>{same.length > 1 && <span className="stage">{same.indexOf(r) + 1} of {same.length}</span>}<span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}{r.verified === true && <span className="stage ok" title="A second AI pass looked at the chart picture and confirmed it">✓ checked</span>}{r.verified === false && <span className="stage" title="The second check couldn't run, so this is the first read only">unchecked</span>}{r.by && <span className={"stage by-" + r.by}>{BY[r.by]}</span>}<span className="hit-d">{r.description}</span></span>
-                  <span className="hit-score num" title={r.by === "rule" ? "Indicator score: pattern shape 70%, indicator checks 30%" : r.rule != null ? `AI ${r.score}%, indicators ${r.rule}` : "AI confidence"}>{r.by === "rule" ? r.score : `${r.score}%`}{r.rule != null && <small className="muted">ind {r.rule}</small>}</span>
+                  <span className="hit-score num" title={r.by === "rule" ? "Indicator score: pattern shape 70%, indicator checks 30%" : r.rule != null ? `AI ${r.score}%, indicators ${r.rule}` : "AI confidence"}>{r.by === "rule" ? r.score : `${r.score}%`}{r.rule != null && <small className="muted">{result.analyzer === "screen_ai" ? "screen" : "ind"} {r.rule}</small>}</span>
                   <MatchChart closes={r.closes} shape={result.shape} points={r.points} bars={r.bars} />
                   <span className="hit-meta">
                     <span className="num">{fmtPx(r.close)} <span className={cls(r.change)}>{fmtPct(r.change)}</span></span>

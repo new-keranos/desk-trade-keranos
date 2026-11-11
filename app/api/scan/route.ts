@@ -17,8 +17,9 @@ const Body = z.object({
   themes: z.array(z.enum(Object.keys(THEMES) as [ThemeId, ...ThemeId[]])).max(5).default([]),
   length: z.enum(["short", "medium", "long"]).default("medium"),
   offset: z.number().int().min(0).max(5000).default(0),
-  /** ai: the AI judges the charts; rules: indicator rules only, no AI call; compare: both on the same charts. */
-  analyzer: z.enum(["ai", "rules", "compare"]).default("ai"),
+  /** ai: the AI judges the charts; rules: indicator rules only, no AI call; compare: both on the same charts;
+   * screen_ai: indicator screen from the screener columns first, then get_ohlcv and the AI on the stocks that pass. */
+  analyzer: z.enum(["ai", "rules", "compare", "screen_ai"]).default("ai"),
   ai: AiChoice.optional(),
   /** A model for the second check, or null to skip it. */
   verify: AiChoice.nullable().optional(),

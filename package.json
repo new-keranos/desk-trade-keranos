@@ -8,7 +8,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test:pivots": "node --experimental-strip-types scripts/test-pivots.ts",
-    "test:rules": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/test-rules.ts"
+    "test:rules": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/test-rules.ts",
+    "test:screen": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/test-screen.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",

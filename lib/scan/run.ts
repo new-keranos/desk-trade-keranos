@@ -10,6 +10,7 @@ import { rank } from "./prefilter";
 import { DETECTORS, detect, type Detection, type TrackState } from "./pivots";
 import { advance, forget, loadStates, saveStates, seedFromBars, seedsToday, SEEDS_PER_DAY } from "./tracker";
 import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "./universe";
+import { MIN_SCREEN, passes, screen, type Screen } from "./screen";
 import { addBacktest, analyze, backtest, HORIZON, type Backtest, type RuleHit } from "./rules";
 
 /** Charts fetched per request; the browser asks for the next page a minute later. Small pages keep TradingView
@@ -55,8 +56,11 @@ export type ScanRow = {
 };
 /** Backtest totals without the trade list, small enough to send and save. */
 export type BtSummary = { signals: number; wins: number; losses: number; open: number; avgRet: number; horizon: number };
-/** How the charts are judged: by the AI, by the indicator rules only (no AI call), or both side by side. */
-export type Analyzer = "ai" | "rules" | "compare";
+/** How the charts are judged: by the AI, by the indicator rules only (no AI call), both side by side, or the AI
+ * reading only the stocks that pass an indicator screen from the screener columns (screen_ai). */
+export type Analyzer = "ai" | "rules" | "compare" | "screen_ai";
+/** Most stocks the indicator screen passes to get_ohlcv and the AI in one scan (one page). */
+export const MAX_SCREENED = 20;
 export type ScanEvent =
   | { type: "status"; text: string; done?: number; total?: number; phase?: "load" | "ai" }
   /** Sent first: where this page sits in the market, so the browser can carry on if the page fails later. */
@@ -81,11 +85,12 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const where = UNIVERSES[o.universe].label + (o.themes.length ? " · " + o.themes.map((t) => THEMES[t].label).join(", ") : "");
   emit({ type: "status", text: `Loading ${where} from TradingView` });
   // One run_screener call lists the market with each stock's quote snapshot (cached 4 h).
-  const { stocks: members, snaps, prev } = await cachedJson(`universe3:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
+  const { stocks: members, snaps, prev, inds = {} } = await cachedJson(`universe4:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
   const likely = rank(members, snaps, o.template?.id);
   // Needs Redis: on serverless hosting each request may run in a fresh instance, so states kept only in memory
   // would be lost between pages and every stock would be seeded again and again.
   // Compare mode skips it, so the AI and the rules read the same charts (the tracker would pick them by rule).
+  if (o.analyzer === "screen_ai" && o.template && members.length) return runScreened(o, emit, { members, likely, inds, where, deadline });
   const tracked = !o.image && !!o.template && !!DETECTORS[o.template.id] && o.analyzer !== "compare" && process.env.PATTERN_TRACKER !== "0" && hasRedis();
   if (tracked && members.length) return runTracked(o, emit, { members, likely, prev, where, deadline });
   const stocks = likely.slice(0, MAX_CHARTS);
@@ -108,8 +113,33 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
 
 type Member = Awaited<ReturnType<typeof loadUniverse>>["stocks"][number];
 type Plan = { list: Member[]; total: number; next?: number; notes: string[]; deadline: number;
+  /** Indicator screen results for the listed stocks (screen_ai), shown on their rows. */
+  screened?: Map<string, Screen>;
   /** Runs on the loaded charts before the AI reads them; returns the ones the AI should read. */
   pick?: (loaded: Stock[]) => Promise<Stock[]> };
+
+/** Indicator screen → AI: the screener columns (already on the call that listed the market) score every stock's
+ * indicators against the pattern's direction. Only the best that pass the screen and fit the pattern's shape
+ * from the quote data get a get_ohlcv call and an AI read: at most MAX_SCREENED, in one page. */
+async function runScreened(o: ScanOptions, emit: (e: ScanEvent) => void, c: { members: Member[]; likely: Member[]; inds: Record<string, Awaited<ReturnType<typeof loadUniverse>>["inds"][string]>; where: string; deadline: number }) {
+  const t = o.template!;
+  emit({ type: "status", text: `Screening ${c.members.length} stocks by indicators` });
+  const results = new Map<string, Screen>();
+  const order = new Map(c.likely.map((m, i) => [m.symbol, i]));
+  for (const m of c.likely) { const r = screen(c.inds[m.symbol] ?? {}, t.id, t.bias); if (passes(r)) results.set(m.symbol, r); }
+  // Best screen score first; ties keep the quote-data fit order.
+  const passed = c.likely.filter((m) => results.has(m.symbol))
+    .sort((a, b) => results.get(b.symbol)!.score - results.get(a.symbol)!.score || order.get(a.symbol)! - order.get(b.symbol)!);
+  const list = passed.slice(0, MAX_SCREENED);
+  const notes = [`Indicator screen: ${c.likely.length} of ${c.members.length} stocks in ${c.where} could fit ${t.name} from their quote data, ${passed.length} also passed the indicator screen (score ${MIN_SCREEN}+); ${list.length < passed.length ? `the best ${list.length} were` : list.length === 1 ? "it was" : `all ${list.length} were`} charted and read by the AI.`];
+  emit({ type: "page", total: list.length });
+  if (!list.length) {
+    const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: 0, note: notes[0] };
+    emit(r);
+    return r;
+  }
+  return readCharts({ ...o, offset: 0 }, emit, { list, total: list.length, notes, deadline: c.deadline, screened: new Map(list.map((m) => [m.symbol, results.get(m.symbol)!])) });
+}
 
 /** Pattern-detector scan: every stock in the market keeps a small pivot state, brought up to date from the
  * screener call that listed the market. Only stocks whose state scores a match cost a chart call and an AI read.
@@ -220,7 +250,7 @@ async function readCharts(o: ScanOptions, emit: (e: ScanEvent) => void, plan: Pl
   if (skipped) notes.push(`${skipped} charts couldn't be loaded, likely TradingView's per-minute limit. Wait a minute and scan again to include them.`);
 
   // Indicator rules: instant and free, so they run on every loaded chart before (or instead of) the AI.
-  const mode: Analyzer = o.analyzer && o.template && DETECTORS[o.template.id] ? o.analyzer : "ai";
+  const mode: Analyzer = (o.analyzer === "rules" || o.analyzer === "compare") && o.template && DETECTORS[o.template.id] ? o.analyzer : "ai";
   const ruleHits = new Map<string, { hit: RuleHit; bt: Backtest }>();
   let bt: Backtest | undefined;
   if (mode !== "ai") {
@@ -278,8 +308,12 @@ async function readCharts(o: ScanOptions, emit: (e: ScanEvent) => void, plan: Pl
         heightPct: lo > 0 ? Math.round(((hi - lo) / lo) * 1000) / 10 : 0, closes: win.length > 96 ? resample(win, 96) : win,
         checks: v.evidence, points: v.points.map((p) => ({ k: p.k - v.start, date: day(b.t[p.k]), price: p.price, label: p.label })),
         lines: v.lines.map((l) => ({ from: at(l.k1, l.p1), to: at(l.k2, l.p2), role: l.role, label: l.label, extend: l.extend })),
-        stage: v.stage, summary: v.summary, breakout: v.breakout, invalidation: v.invalidation, verified: v.verified, ...compared(v) };
+        stage: v.stage, summary: v.summary, breakout: v.breakout, invalidation: v.invalidation, verified: v.verified, ...compared(v), ...screenedOf(v.symbol) };
     });
+  };
+  const screenedOf = (sym: string): Partial<ScanRow> => {
+    const r = plan.screened?.get(sym);
+    return r ? { indicators: r.signals.map(({ ok, text }) => ({ ok, text })), rule: r.score } : {};
   };
   // Compare mode: an AI match whose span overlaps the rules' match on the same stock was found by both.
   const ruleSeen = new Set<string>();
