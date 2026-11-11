@@ -11,7 +11,12 @@ type Row = { id?: string; symbol: string; name: string; description?: string; se
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
   checks?: string[]; points?: { k: number; date: string; price: number; label?: string }[];
   lines?: { from: { date: string; price: number }; to: { date: string; price: number }; role: "upper" | "lower" | "level"; label: string; extend: boolean }[];
-  stage?: string; summary?: string; breakout?: number; invalidation?: number; verified?: boolean };
+  stage?: string; summary?: string; breakout?: number; invalidation?: number; verified?: boolean;
+  /** Who found it (compare and indicator scans), the indicator score on an AI match, the indicator checks and this stock's backtest. */
+  by?: By; rule?: number; indicators?: { ok: boolean; text: string }[]; bt?: Bt };
+type By = "ai" | "rule" | "both";
+type Bt = { signals: number; wins: number; losses: number; open: number; avgRet: number; horizon: number };
+type Analyzer = "ai" | "rules" | "compare";
 type Img = { mime: "image/jpeg"; data: string; preview: string };
 type Result = { rows: Row[]; checked: number; note?: string; shape: number[]; label: string; pattern?: string };
 /** A scanner match opened on the dashboard. */
@@ -21,17 +26,33 @@ const hitsOf = (res: Result): PatternHit[] => res.rows.map((r) => ({ ...r, id: r
   pattern: res.pattern ?? TEMPLATES.find((t) => t.name === res.label)?.id ?? "image" }));
 
 // 👍/👎 on matches, kept in this browser and sent with later scans of the same pattern so the AI learns what the user counts as one.
-type Vote = { id: string; pattern: string; symbol: string; good: boolean; note: string; at: string };
+type Vote = { id: string; pattern: string; symbol: string; good: boolean; note: string; at: string; by?: By };
 const VOTES = "keranos.feedback.v1", VOTES_EVENT = "keranos:feedback", MAX_VOTES = 200;
 const loadVotes = (): Vote[] => { try { const v = JSON.parse(localStorage.getItem(VOTES) ?? "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
 function vote(hit: PatternHit, good: boolean | null) {
   const rest = loadVotes().filter((v) => v.id !== hit.id || v.pattern !== hit.pattern);
   const marks = (hit.points ?? []).map((p) => `${p.label || "point"} ${p.price} (${p.date})`).join(", ");
   const note = `${hit.stage ?? "stage?"}, ${hit.from} to ${hit.to}, ${hit.bars} days, height ${hit.heightPct}%; marks: ${marks}${hit.summary ? `; AI said: ${hit.summary}` : ""}`.slice(0, 600);
-  const next = good == null ? rest : [{ id: hit.id, pattern: hit.pattern, symbol: hit.symbol, good, note, at: new Date().toISOString() }, ...rest].slice(0, MAX_VOTES);
+  const next = good == null ? rest : [{ id: hit.id, pattern: hit.pattern, symbol: hit.symbol, good, note, at: new Date().toISOString(), by: hit.by ?? "ai" }, ...rest].slice(0, MAX_VOTES);
   try { localStorage.setItem(VOTES, JSON.stringify(next)); } catch { /* blocked storage */ }
   window.dispatchEvent(new Event(VOTES_EVENT));
 }
+/** Your 👍 share of the matches each method found for a pattern: the accuracy test against your own reading. */
+function useVoteScore(pattern?: string) {
+  const [score, setScore] = useState<Record<By, { good: number; all: number }> | null>(null);
+  useEffect(() => {
+    const sync = () => {
+      const out: Record<By, { good: number; all: number }> = { ai: { good: 0, all: 0 }, rule: { good: 0, all: 0 }, both: { good: 0, all: 0 } };
+      for (const v of loadVotes()) if (v.pattern === pattern) { const k = v.by ?? "ai"; out[k].all++; if (v.good) out[k].good++; }
+      setScore(out);
+    };
+    sync();
+    window.addEventListener(VOTES_EVENT, sync);
+    return () => window.removeEventListener(VOTES_EVENT, sync);
+  }, [pattern]);
+  return score;
+}
+
 /** The latest 6 agreements and 6 rejections for a pattern, for the scan request. */
 const feedbackFor = (pattern: string) => {
   const v = loadVotes().filter((x) => x.pattern === pattern);
@@ -54,7 +75,23 @@ export function Thumbs({ hit }: { hit: PatternHit }) {
     </span>
   );
 }
-type Saved = Result & { total?: number; id: string; at: string; universe: string; themes: string[]; length: string };
+type Saved = Result & { total?: number; id: string; at: string; universe: string; themes: string[]; length: string;
+  analyzer?: Analyzer; backtest?: Bt; compare?: { ai: number; rule: number; both: number } };
+
+const ANALYZERS: [Analyzer, string, string][] = [
+  ["ai", "AI", "The AI reads each chart and judges it against the pattern"],
+  ["rules", "Indicators (AI off)", "No AI: a pivot detector finds the pattern and SMA50/200, RSI, MACD and volume confirm it; past signals are backtested"],
+  ["compare", "AI vs indicators", "Both read the same charts, so you can see where they agree"],
+];
+const ANALYZER_STORE = "keranos.analyzer.v1";
+const BY: Record<By, string> = { ai: "AI only", rule: "Indicators only", both: "AI + indicators" };
+/** Two backtest totals added (averages weighted by finished signals). */
+function addBt(a: Bt | undefined, b: Bt | undefined): Bt | undefined {
+  if (!a || !b) return a ?? b;
+  const ca = a.signals - a.open, cb = b.signals - b.open, closed = ca + cb;
+  return { signals: a.signals + b.signals, wins: a.wins + b.wins, losses: a.losses + b.losses, open: a.open + b.open, horizon: b.horizon,
+    avgRet: closed ? Math.round(((a.avgRet * ca + b.avgRet * cb) / closed) * 10) / 10 : 0 };
+}
 
 const UNIVERSES: [string, string][] = [["SP500", "S&P 500"], ["NDX", "Nasdaq 100"], ["SET50", "SET50"], ["SET100", "SET100"]];
 const THEMES: [string, string][] = [["TECH", "Tech"], ["MEDICAL", "Medical"], ["FINANCE", "Finance"], ["ENERGY", "Energy"], ["FINTECH", "Fintech"]];
@@ -74,8 +111,8 @@ const fmtWhen = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "n
 
 function downloadCsv(s: Saved) {
   const esc = (v: unknown) => { const t = v == null ? "" : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
-  const head = ["symbol", "name", "description", "sector", "ai_confidence_pct", "stage", "days", "from", "to", "height_pct", "breakout", "invalidation", "close", "change_pct", "summary"];
-  const lines = s.rows.map((r) => [r.symbol, r.name, r.description, r.sector, r.score, r.stage, r.bars, r.from, r.to, r.heightPct, r.breakout, r.invalidation, r.close, r.change?.toFixed(2), r.summary].map(esc).join(","));
+  const head = ["symbol", "name", "description", "sector", "found_by", "score", "indicator_score", "past_signals", "past_wins", "stage", "days", "from", "to", "height_pct", "breakout", "invalidation", "close", "change_pct", "summary"];
+  const lines = s.rows.map((r) => [r.symbol, r.name, r.description, r.sector, r.by ?? "ai", r.score, r.by === "rule" ? r.score : r.rule, r.bt?.signals, r.bt?.wins, r.stage, r.bars, r.from, r.to, r.heightPct, r.breakout, r.invalidation, r.close, r.change?.toFixed(2), r.summary].map(esc).join(","));
   const blob = new Blob(["\ufeff" + [head.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -122,7 +159,7 @@ function overall(ev: { text: string; done?: number; total?: number; phase?: "loa
 const mergeRows = (have: Row[], add: Row[]) => [...have.filter((x) => !add.some((r) => (r.id ?? r.symbol) === (x.id ?? x.symbol))), ...add];
 
 /** One page of a scan, streamed. Resolves with the page's final results, or null when the server reported an error. */
-async function scanPage(body: object, signal: AbortSignal, on: (ev: any) => void): Promise<{ rows: Row[]; checked: number; note?: string; total: number; next?: number } | null> {
+async function scanPage(body: object, signal: AbortSignal, on: (ev: any) => void): Promise<{ rows: Row[]; checked: number; note?: string; total: number; next?: number; backtest?: Bt; compare?: Saved["compare"] } | null> {
   const res = await postWithRelogin("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify(body) });
   if (res.status === 401) { location.href = "/login"; return null; }
   if (res.status === 429) {
@@ -162,6 +199,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   const [universe, setUniverse] = useState("SET100");
   const [themes, setThemes] = useState<string[]>([]);
   const [length, setLength] = useState("medium");
+  const [analyzer, setAnalyzerState] = useState<Analyzer>("ai");
+  useEffect(() => { try { const v = localStorage.getItem(ANALYZER_STORE); if (v === "rules" || v === "compare") setAnalyzerState(v); } catch { /* default */ } }, []);
+  const setAnalyzer = (v: Analyzer) => { setAnalyzerState(v); try { localStorage.setItem(ANALYZER_STORE, v); } catch { /* this tab only */ } };
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ text: string; done?: number; total?: number } | null>(null);
   const [result, setResult] = useState<Saved | null>(null);
@@ -175,6 +215,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   const fileEl = useRef<HTMLInputElement>(null);
 
   const usingImage = pattern === "image";
+  // Indicator rules know the built-in patterns only; an image always goes to the AI.
+  const mode: Analyzer = usingImage ? "ai" : analyzer;
+  const votes = useVoteScore(result?.pattern);
   const toggleTheme = (t: string) => setThemes((x) => (x.includes(t) ? x.filter((y) => y !== t) : [...x, t]));
 
   async function pick(file?: File | null) {
@@ -194,9 +237,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
     const label = t?.name ?? "Your image pattern";
     ctl.current = new AbortController();
     const signal = ctl.current.signal;
-    const body = { ai: currentModel(), verify: currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
+    const body = { analyzer: mode, ai: currentModel(), verify: mode === "rules" ? null : currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
     // One saved scan grows as matches arrive, page after page.
-    const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: [], checked: 0, shape, label, pattern: usingImage ? "image" : pattern };
+    const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: [], checked: 0, shape, label, pattern: usingImage ? "image" : pattern, analyzer: mode };
     const notes: string[] = [];
     const show = () => setResult({ ...s, rows: [...s.rows].sort((x, y) => y.score - x.score), note: notes.join(" ") || undefined });
     try {
@@ -217,6 +260,8 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
         if (page) {
           s.checked += page.checked;
           if (page.note) notes.push(page.note);
+          s.backtest = addBt(s.backtest, page.backtest);
+          if (page.compare) { const c = s.compare ?? { ai: 0, rule: 0, both: 0 }; s.compare = { ai: c.ai + page.compare.ai, rule: c.rule + page.compare.rule, both: c.both + page.compare.both }; }
           s.rows = mergeRows(s.rows, page.rows);
           next = page.next; retried = false; skippedInARow = 0;
         } else if (/TradingView/.test(failure)) {
@@ -261,7 +306,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   return (
     <section className="pane scanner" aria-labelledby="scan-h" hidden={hidden}
       onPaste={(e) => { const f = Array.from(e.clipboardData.files).find((x) => x.type.startsWith("image/")); if (f) pick(f); }}>
-      <div className="pane-h"><h2 id="scan-h">Find stocks by chart pattern</h2><span className="label">Daily charts · read by AI</span></div>
+      <div className="pane-h"><h2 id="scan-h">Find stocks by chart pattern</h2><span className="label">Daily charts · {mode === "rules" ? "read by indicators, AI off" : mode === "compare" ? "AI vs indicators" : "read by AI"}</span></div>
 
       <div className="scan-sec">
         <div className="label">Pattern</div>
@@ -319,15 +364,21 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
       <div className="scan-run">
         {busy ? <button className="btn" type="button" onClick={() => ctl.current?.abort()}>Stop</button>
           : <button className="btn primary" type="button" onClick={scan}>Scan</button>}
-        {!busy && <ModelSelect className="scan-model" />}
-        {!busy && <VerifySelect className="scan-model" />}
+        {!busy && (
+          <select className="scan-model" value={mode} disabled={usingImage} aria-label="Analyze with" title={usingImage ? "Your image is always read by the AI" : ANALYZERS.find((a) => a[0] === mode)?.[2]}
+            onChange={(e) => setAnalyzer(e.target.value as Analyzer)}>
+            {ANALYZERS.map(([id, l]) => <option key={id} value={id}>Analyze: {l}</option>)}
+          </select>
+        )}
+        {!busy && mode !== "rules" && <ModelSelect className="scan-model" />}
+        {!busy && mode !== "rules" && <VerifySelect className="scan-model" />}
         {status && (
           <div className="scan-status" role="status">
             <span>{status.text}</span>
             {status.total ? <progress max={status.total} value={status.done ?? 0} /> : null}
           </div>
         )}
-        {!busy && <span className="muted" style={{ fontSize: 12 }}>AI reads each chart and judges it against {usingImage ? "your image" : "the pattern's textbook rules"}</span>}
+        {!busy && <span className="muted" style={{ fontSize: 12 }}>{mode === "ai" ? <>AI reads each chart and judges it against {usingImage ? "your image" : "the pattern's textbook rules"}</> : ANALYZERS.find((a) => a[0] === mode)![2]}</span>}
       </div>
 
       {error && <div className="note warn">{error}</div>}
@@ -338,16 +389,17 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
               <div className="muted" style={{ fontSize: 12 }}>{uniLabel(result.universe)} · {themeLabel(result.themes)} · {busy && result.total ? `${result.checked} of ${result.total} stocks checked so far` : `${result.checked} charts checked`} · saved {fmtWhen(result.at)}</div></div>
             {result.rows.length > 0 && <button type="button" className="btn" onClick={() => downloadCsv(result)}>Download CSV</button>}
           </div>
+          {(result.backtest || result.compare || (result.analyzer && result.analyzer !== "ai")) && <Accuracy r={result} votes={votes} />}
           {result.note && <div className="note">{result.note}</div>}
-          {!result.rows.length && <div className="note">{busy ? "No matches yet. They appear here as the AI reads each batch of charts." : <>The AI wasn&apos;t at least 70% sure about any chart. Try another pattern length, market or theme.</>}</div>}
+          {!result.rows.length && <div className="note">{busy ? "No matches yet. They appear here as each batch of charts is read." : result.analyzer === "rules" ? "The indicator rules didn't score any chart 70 or more. Try another pattern or market." : <>The AI wasn&apos;t at least 70% sure about any chart. Try another pattern length, market or theme.</>}</div>}
           <ul className="hits">
             {hitsOf(result).map((r, _i, all) => {
               const same = all.filter((x) => x.symbol === r.symbol);
               return (
               <li key={r.id} className="hit">
-                <button type="button" onClick={() => onOpen(r, same)} aria-label={`Open ${r.symbol}, AI ${r.score}% sure`}>
-                  <span className="hit-t"><b>{r.name}</b>{same.length > 1 && <span className="stage">{same.indexOf(r) + 1} of {same.length}</span>}<span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}{r.verified === true && <span className="stage ok" title="A second AI pass looked at the chart picture and confirmed it">✓ checked</span>}{r.verified === false && <span className="stage" title="The second check couldn't run, so this is the first read only">unchecked</span>}<span className="hit-d">{r.description}</span></span>
-                  <span className="hit-score num">{r.score}%</span>
+                <button type="button" onClick={() => onOpen(r, same)} aria-label={`Open ${r.symbol}, ${r.by === "rule" ? "indicator score" : "AI"} ${r.score}${r.by === "rule" ? "" : "% sure"}`}>
+                  <span className="hit-t"><b>{r.name}</b>{same.length > 1 && <span className="stage">{same.indexOf(r) + 1} of {same.length}</span>}<span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}{r.verified === true && <span className="stage ok" title="A second AI pass looked at the chart picture and confirmed it">✓ checked</span>}{r.verified === false && <span className="stage" title="The second check couldn't run, so this is the first read only">unchecked</span>}{r.by && <span className={"stage by-" + r.by}>{BY[r.by]}</span>}<span className="hit-d">{r.description}</span></span>
+                  <span className="hit-score num" title={r.by === "rule" ? "Indicator score: pattern shape 70%, indicator checks 30%" : r.rule != null ? `AI ${r.score}%, indicators ${r.rule}` : "AI confidence"}>{r.by === "rule" ? r.score : `${r.score}%`}{r.rule != null && <small className="muted">ind {r.rule}</small>}</span>
                   <MatchChart closes={r.closes} shape={result.shape} points={r.points} bars={r.bars} />
                   <span className="hit-meta">
                     <span className="num">{fmtPx(r.close)} <span className={cls(r.change)}>{fmtPct(r.change)}</span></span>
@@ -355,6 +407,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
                     {r.sector && <span className="muted">{r.sector}</span>}
                     {r.summary && <span className="hit-ai">{r.summary}</span>}
                     {!!r.checks?.length && <span className="hit-checks">{r.checks.map((c) => <span key={c}>✓ {c}</span>)}</span>}
+                    {!!r.indicators?.length && <span className="hit-checks ind">{r.indicators.map((c) => <span key={c.text} className={c.ok ? "" : "no"}>{c.ok ? "✓" : "✗"} {c.text}</span>)}</span>}
                     {(r.breakout != null || r.invalidation != null) && <span className="hit-levels num">
                       {r.breakout != null && <span>Breakout level <b>{fmtPx(r.breakout)}</b></span>}
                       {r.invalidation != null && <span className="muted">Invalid past {fmtPx(r.invalidation)}</span>}</span>}
@@ -364,7 +417,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
               </li>
             ); })}
           </ul>
-          <p className="note">The % is the AI&apos;s confidence after reading the daily bars. It is a starting point for your own chart reading, not a confirmed setup or advice.</p>
+          <p className="note">{result.analyzer === "rules" ? "The score is the pattern detector's 0-100 fit blended with the indicator checks (70/30), no AI involved." : "The % is the AI's confidence after reading the daily bars."} It is a starting point for your own chart reading, not a confirmed setup or advice.</p>
         </div>
       )}
       <div className="scan-saved">
@@ -384,6 +437,25 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
         )}
       </div>
     </section>
+  );
+}
+
+/** How well each method did: the indicator backtest over the loaded charts, AI vs indicators, and your 👍 rate. */
+function Accuracy({ r, votes }: { r: Saved; votes: Record<By, { good: number; all: number }> | null }) {
+  const b = r.backtest, closed = b ? b.signals - b.open : 0;
+  const rate = (x: { good: number; all: number }) => (x.all ? `${Math.round((100 * x.good) / x.all)}% (${x.good} of ${x.all})` : "no votes yet");
+  return (
+    <div className="acc">
+      {b && <div className="acc-c"><div className="label">Indicator backtest</div>
+        <b className="num">{closed ? `${Math.round((100 * b.wins) / closed)}%` : "–"}</b>
+        <span className="muted">{closed ? `${b.wins} of ${closed} past signals worked within ${b.horizon} days, avg ${b.avgRet > 0 ? "+" : ""}${b.avgRet}% each` : "No finished past signals in these charts"}{b.open ? ` · ${b.open} too recent to judge` : ""}</span></div>}
+      {r.compare && <div className="acc-c"><div className="label">AI vs indicators</div>
+        <b className="num">{r.compare.both} <small className="muted">both</small></b>
+        <span className="muted">AI only {r.compare.ai} · indicators only {r.compare.rule}</span></div>}
+      {votes && <div className="acc-c"><div className="label">Your 👍 rate on this pattern</div>
+        <span>AI: {rate({ good: votes.ai.good + votes.both.good, all: votes.ai.all + votes.both.all })}</span>
+        <span>Indicators: {rate({ good: votes.rule.good + votes.both.good, all: votes.rule.all + votes.both.all })}</span></div>}
+    </div>
   );
 }
 
