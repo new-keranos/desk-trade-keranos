@@ -17,6 +17,8 @@ const Body = z.object({
   themes: z.array(z.enum(Object.keys(THEMES) as [ThemeId, ...ThemeId[]])).max(5).default([]),
   length: z.enum(["short", "medium", "long"]).default("medium"),
   offset: z.number().int().min(0).max(5000).default(0),
+  /** ai: the AI judges the charts; rules: indicator rules only, no AI call; compare: both on the same charts. */
+  analyzer: z.enum(["ai", "rules", "compare"]).default("ai"),
   ai: AiChoice.optional(),
   /** A model for the second check, or null to skip it. */
   verify: AiChoice.nullable().optional(),
@@ -33,10 +35,12 @@ export async function POST(req: Request) {
   if (!parsed.success) return Response.json({ error: "Bad request" }, { status: 400 });
   const { universe, themes, length, pattern, offset } = parsed.data;
   const ai = resolveChoice(parsed.data.ai);
-  const verify = parsed.data.verify ? resolveChoice(parsed.data.verify) : undefined;
+  const verify = parsed.data.verify && parsed.data.analyzer !== "rules" ? resolveChoice(parsed.data.verify) : undefined;
   const feedback = parsed.data.feedback;
   const template = "template" in pattern ? templateById(pattern.template) : undefined;
   if ("template" in pattern && !template) return Response.json({ error: "Unknown pattern" }, { status: 400 });
+  const { analyzer } = parsed.data;
+  if (analyzer !== "ai" && !template) return Response.json({ error: "Indicator mode works with the built-in patterns, not an image." }, { status: 400 });
 
   // Open TradingView before streaming: a token refresh may need to update the login cookie.
   let tv: Awaited<ReturnType<typeof openTv>>;
@@ -55,8 +59,8 @@ export async function POST(req: Request) {
       const emit = (e: ScanEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       try {
         const image = "image" in pattern ? pattern.image : undefined;
-        await traceRequest("scan", ai, { universe, themes, length, offset, verify: verify?.model ?? "off", feedback: feedback?.length ?? 0, pattern: template?.name ?? "image" },
-          () => runScan({ ai, verify, feedback, tv: tv.call, universe, themes, length, template, image, offset, signal: req.signal }, emit));
+        await traceRequest("scan", ai, { analyzer, universe, themes, length, offset, verify: verify?.model ?? "off", feedback: feedback?.length ?? 0, pattern: template?.name ?? "image" },
+          () => runScan({ analyzer, ai, verify, feedback, tv: tv.call, universe, themes, length, template, image, offset, signal: req.signal }, emit));
       } catch (err) {
         let message = "The scan was interrupted. Try again.";
         if (err instanceof Error && /TradingView|AI /.test(err.message)) message = err.message;

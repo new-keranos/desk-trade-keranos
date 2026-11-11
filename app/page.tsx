@@ -381,11 +381,11 @@ function DivNote({ bars }: { bars: Bars }) {
 function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: PatternHit[]; onPick: (p: PatternHit) => void; onClear: () => void; onBack: () => void }) {
   const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
-    `analyze pattern ${p.symbol} ${p.label} ${p.from} ${p.to} (scanner AI: ${p.score}% sure, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
+    `analyze pattern ${p.symbol} ${p.label} ${p.from} ${p.to} (${p.by === "rule" ? `scanner indicators: score ${p.score}` : `scanner AI: ${p.score}% sure`}, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
   return (
     <div className="pane pattern-pane">
       <div className="pane-h">
-        <div><h2>{p.label} · AI <span className="num">{p.score}%</span> sure{p.stage && <span className="stage">{p.stage}</span>}{p.verified === true && <span className="stage ok">✓ checked</span>}</h2>
+        <div><h2>{p.label} · {p.by === "rule" ? <>indicators <span className="num">{p.score}</span></> : <>AI <span className="num">{p.score}%</span> sure</>}{p.stage && <span className="stage">{p.stage}</span>}{p.verified === true && <span className="stage ok">✓ checked</span>}</h2>
           {all.length > 1 && <div className="chips" role="group" aria-label="Matches on this stock" style={{ margin: "6px 0" }}>
             {all.map((x, k) => <button key={x.id} type="button" className="chip" aria-pressed={x.id === p.id} onClick={() => onPick(x)}>
               Match {k + 1} · {x.from} to {x.to} · <span className="num">{x.score}%</span></button>)}</div>}

@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test:pivots": "node --experimental-strip-types scripts/test-pivots.ts"
+    "test:pivots": "node --experimental-strip-types scripts/test-pivots.ts",
+    "test:rules": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/test-rules.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",

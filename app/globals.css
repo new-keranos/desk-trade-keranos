@@ -276,3 +276,14 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .stage.ok { color: var(--up); border-color: currentColor; }
 .hits .thumbs button { width: auto; display: inline-block; padding: 3px 8px; }
 .div-note { margin: 0; font-size: 12px; }
+
+/* Scanner: indicator mode and AI vs indicators */
+.hit-checks.ind { color: var(--muted); }
+.hit-checks.ind span:not(.no) { color: var(--up); }
+.hit-checks.ind .no { color: var(--down); }
+.stage.by-both { color: var(--up); border-color: currentColor; }
+.stage.by-rule { color: var(--accent, var(--muted)); border-color: currentColor; }
+.acc { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; margin: 8px 0; }
+.acc-c { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
+.acc-c b { font-size: 20px; }
+.hit-score small { display: block; font-size: 11px; font-weight: 400; }
