@@ -13,6 +13,7 @@ export const TV_MCP_URL = process.env.TRADINGVIEW_MCP_URL || "https://mcp.tradin
 // Tool names as the TradingView MCP server exposes them.
 export const TV = {
   watchlist: "mcp-watchlist-get-active-watchlist",
+  watchlists: "mcp-watchlist-list-watchlists",
   watchAdd: "mcp-watchlist-add-to-watchlist",
   watchRemove: "mcp-watchlist-remove-from-watchlist",
   quotes: "mcp-tv-get-symbol-data-batch",
@@ -32,7 +33,7 @@ export const TV = {
 
 // Read-only tools the browser may call through /api/tv.
 export const READ_TOOLS: ReadonlySet<string> = new Set([
-  TV.watchlist, TV.quotes, TV.ohlcv, TV.technicals, TV.news, TV.financials, TV.forecasts,
+  TV.watchlist, TV.watchlists, TV.quotes, TV.ohlcv, TV.technicals, TV.news, TV.financials, TV.forecasts,
   TV.screener, TV.earnings, TV.dividends, TV.economic, TV.search, TV.alerts,
 ]);
 // Tools that change TradingView state. Only run after the user presses Confirm.
