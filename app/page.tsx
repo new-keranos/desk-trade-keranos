@@ -187,7 +187,8 @@ export default function Desk() {
           <Scanner hidden={view !== "scanner"} onOpen={(hit, same) => { setPattern(hit); setPatterns(same); open(hit.symbol); document.querySelector(".main")?.scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }} />
           {view === "desk" && (
             <Focus symbol={selected} quote={selected ? quotes[selected] : undefined}
-              pattern={pattern?.symbol === selected ? pattern : null} patterns={patterns} onPickPattern={setPattern} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")} />
+              pattern={pattern?.symbol === selected ? pattern : null} patterns={patterns} onPickPattern={setPattern} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")}
+              watchlistId={watchlistId} inWatchlist={!!selected && symbols.includes(selected)} onWatchlistChanged={loadWatchlist} />
           )}
         </div>
       </main>
@@ -266,8 +267,9 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
 // ---------- focus ----------
 const RANGES: [string, number, TvRange][] = [["1M", 22, "1M"], ["3M", 66, "3M"], ["6M", 126, "6M"], ["1Y", 252, "12M"]];
 
-function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern, onBackToScan }: { symbol: string | null; quote?: Quote;
-  pattern: PatternHit | null; patterns: PatternHit[]; onPickPattern: (p: PatternHit) => void; onClearPattern: () => void; onBackToScan: () => void }) {
+function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern, onBackToScan, watchlistId, inWatchlist, onWatchlistChanged }: { symbol: string | null; quote?: Quote;
+  pattern: PatternHit | null; patterns: PatternHit[]; onPickPattern: (p: PatternHit) => void; onClearPattern: () => void; onBackToScan: () => void;
+  watchlistId: string | null; inWatchlist: boolean; onWatchlistChanged: () => void }) {
   const [bars, setBars] = useState<Bars | null>(null);
   const [tech, setTech] = useState<Tech | null>(null);
   const [news, setNews] = useState<Headline[] | null>(null);
@@ -327,6 +329,8 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
             <div className="px">{fmtPx(q.close)}<small className={cls(q.change)}>{q.change_abs != null ? `${q.change_abs > 0 ? "+" : ""}${fmtPx(q.change_abs)} ` : ""}{fmtPct(q.change)}</small></div>
           )}
         </div>
+        {symbol && <TvActions key={symbol} symbol={symbol} close={q.close ?? bars?.c?.at(-1)} watchlistId={watchlistId} inWatchlist={inWatchlist}
+          onWatchlistChanged={onWatchlistChanged} levels={shown && shown.symbol === symbol ? { breakout: shown.breakout, invalidation: shown.invalidation } : undefined} />}
         <div className="chart-bar">
           {mode !== "tv" ? (
             <div className="ranges chips" role="group" aria-label="Chart range">
@@ -496,6 +500,82 @@ function TechBody({ t }: { t: Tech }) {
 }
 
 // ---------- alerts ----------
+type AlertCond = "cross_up" | "cross_down" | "greater" | "less";
+const COND_TH: Record<AlertCond, string> = { cross_up: "ตัดขึ้นเหนือ", cross_down: "ตัดลงใต้", greater: "อยู่เหนือ", less: "อยู่ใต้" };
+const COND_EN: Record<AlertCond, string> = { cross_up: "crosses above", cross_down: "crosses below", greater: "is above", less: "is below" };
+
+// Writes to TradingView from the stock header. The click is the confirmation, the same as a Confirm button in the Agent.
+function TvActions({ symbol, close, watchlistId, inWatchlist, onWatchlistChanged, levels }: { symbol: string; close?: number; watchlistId: string | null;
+  inWatchlist: boolean; onWatchlistChanged: () => void; levels?: { breakout?: number | null; invalidation?: number | null } }) {
+  const lang = useLang();
+  const th = lang === "th";
+  const words = th ? COND_TH : COND_EN;
+  const [adding, setAdding] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [price, setPrice] = useState("");
+  const [cond, setCond] = useState<AlertCond>("cross_up");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const ticker = symbol.split(":")[1] ?? symbol;
+  const round = (n: number) => Number(n.toPrecision(6));
+  // A price above the last close is a cross-up alert, below is a cross-down.
+  const pick = (n: number) => { setPrice(String(round(n))); if (close != null) setCond(n >= close ? "cross_up" : "cross_down"); };
+  const presets: [string, number][] = [
+    ...(levels?.breakout != null ? [[th ? "จุดเบรก" : "Breakout", levels.breakout] as [string, number]] : []),
+    ...(levels?.invalidation != null ? [[th ? "จุดผิดรูป" : "Invalidation", levels.invalidation] as [string, number]] : []),
+    ...(close != null ? ([[th ? "ราคาล่าสุด" : "Last", close], ["+5%", close * 1.05], ["−5%", close * 0.95]] as [string, number][]) : []),
+  ];
+
+  const addWl = async () => {
+    if (!watchlistId) { setMsg({ ok: false, text: th ? "ไม่พบ watchlist ที่ใช้งานอยู่ใน TradingView" : "No active TradingView watchlist found." }); return; }
+    setAdding(true); setMsg(null);
+    try {
+      await tv("mcp-watchlist-add-to-watchlist", { watchlist_id: watchlistId, symbols: [symbol] });
+      onWatchlistChanged();
+      setMsg({ ok: true, text: th ? `เพิ่ม ${ticker} เข้า watchlist แล้ว` : `Added ${ticker} to your watchlist.` });
+    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    setAdding(false);
+  };
+
+  const create = async () => {
+    const n = Number(price);
+    if (!Number.isFinite(n) || n <= 0) { setMsg({ ok: false, text: th ? "ใส่ราคาให้ถูกต้องก่อน" : "Enter a valid price." }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      await tv("mcp-tv-create-alert", { symbol, condition: cond, price: n, name: `${ticker} ${COND_EN[cond]} ${n}`.slice(0, 300), resolution: "1D" });
+      window.dispatchEvent(new Event("nova:alerts-changed"));
+      setMsg({ ok: true, text: th ? `ตั้ง alert แล้ว: ${ticker} ${words[cond]} ${fmtPx(n)}` : `Alert set: ${ticker} ${words[cond]} ${fmtPx(n)}` });
+      setOpen(false);
+    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="tv-act">
+      <div className="tv-act-row">
+        <button className="btn" onClick={addWl} disabled={adding || inWatchlist} aria-label={`Add ${ticker} to TradingView watchlist`}>
+          {inWatchlist ? (th ? "✓ อยู่ใน Watchlist" : "✓ In watchlist") : adding ? "…" : (th ? "☆ เพิ่มเข้า Watchlist" : "☆ Add to watchlist")}</button>
+        <button className="btn" aria-expanded={open} onClick={() => { if (!open && !price && presets[0]) pick(presets[0][1]); setOpen(!open); setMsg(null); }}>
+          🔔 {th ? "ตั้ง Alert ใน TradingView" : "Set TradingView alert"}</button>
+        {msg && <span className={msg.ok ? "tv-ok" : "tv-err"} role="status">{msg.text}</span>}
+      </div>
+      {open && (
+        <form className="tv-alert" onSubmit={(e) => { e.preventDefault(); create(); }}>
+          <span className="muted">{th ? `เมื่อ ${ticker}` : `When ${ticker}`}</span>
+          <select value={cond} onChange={(e) => setCond(e.target.value as AlertCond)} aria-label="Condition">
+            {(Object.keys(words) as AlertCond[]).map((c) => <option key={c} value={c}>{words[c]}</option>)}
+          </select>
+          <input className="num" type="number" step="any" min="0" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} aria-label="Price" />
+          <button className="btn primary" type="submit" disabled={busy}>{busy ? "…" : th ? "สร้าง Alert" : "Create alert"}</button>
+          {!!presets.length && <div className="chips tv-presets">{presets.map(([l, v]) => (
+            <button type="button" key={l} className="chip" aria-pressed={price === String(round(v))} onClick={() => pick(v)}>{l} <span className="num muted">{fmtPx(v)}</span></button>))}</div>}
+          <small className="muted">{th ? "แจ้งเตือนบนกราฟรายวัน (1D) · ดูหรือลบได้ในแผง Alerts" : "Fires on the daily (1D) chart · manage it in the Alerts panel"}</small>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function Alerts() {
   const [alerts, setAlerts] = useState<Alert[] | null>(null);
   const [err, setErr] = useState<string | null>(null);

@@ -138,6 +138,15 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .side .note { padding: 6px 10px; font-size: 12px; }
 
 /* Focus */
+.tv-act { padding: 0 20px 12px; display: grid; gap: 10px; }
+.tv-act-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tv-ok { color: var(--up, #3fb950); font-size: 12px; }
+.tv-err { color: var(--down, #f85149); font-size: 12px; }
+.tv-alert { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--raised); }
+.tv-alert select, .tv-alert input { background: var(--bg, transparent); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
+.tv-alert input { width: 120px; }
+.tv-presets { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+.tv-alert small { flex-basis: 100%; }
 .focus-h { padding: 18px 20px 12px; display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: flex-end; justify-content: space-between; }
 .focus-h h2 { margin: 0; font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: -.01em; }
 .focus-h .sub { color: var(--muted); font-size: 13px; }
