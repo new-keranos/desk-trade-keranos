@@ -79,7 +79,7 @@ export type ScanEvent =
   | { type: "error"; message: string; stop?: boolean; until?: number }
   | { type: "done" };
 
-export type ScanOptions = { analyzer?: Analyzer; ai: ModelChoice; verify?: ModelChoice; feedback?: Feedback[]; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; offset?: number; signal?: AbortSignal };
+export type ScanOptions = { analyzer?: Analyzer; top?: number; ai: ModelChoice; verify?: ModelChoice; feedback?: Feedback[]; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; offset?: number; signal?: AbortSignal };
 
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((ok) => { const id = setTimeout(ok, ms); signal?.addEventListener("abort", () => { clearTimeout(id); ok(); }, { once: true }); });
@@ -166,7 +166,7 @@ function runScreenOnly(o: ScanOptions, emit: (e: ScanEvent) => void, c: { member
 
 /** Indicator screen → AI: the same filter as the AI-off mode (the pattern's outline in the screener ranges,
  * ./shape.ts, plus the indicator screen, ./screen.ts) over every stock in the market, from the one screener call
- * that listed it. Only the best MAX_SCREENED that pass get a get_ohlcv call and an AI read, in one page. */
+ * that listed it. Only the best `top` (10/20/30, default MAX_SCREENED) that pass get a get_ohlcv call and an AI read, in one page. */
 async function runScreened(o: ScanOptions, emit: (e: ScanEvent) => void, c: { members: Member[]; likely: Member[]; inds: Record<string, Awaited<ReturnType<typeof loadUniverse>>["inds"][string]>; where: string; deadline: number }) {
   const t = o.template!;
   emit({ type: "status", text: `Screening all ${c.members.length} stocks by shape and indicators` });
@@ -180,7 +180,7 @@ async function runScreened(o: ScanOptions, emit: (e: ScanEvent) => void, c: { me
     if (passes(r)) results.set(m.symbol, r);
   }
   const passed = c.members.filter((m) => results.has(m.symbol)).sort((a, b) => results.get(b.symbol)!.score - results.get(a.symbol)!.score);
-  const list = passed.slice(0, MAX_SCREENED);
+  const list = passed.slice(0, Math.min(Math.max(1, o.top ?? MAX_SCREENED), 30));
   const notes = [`Indicator screen: ${shaped} of ${c.members.length} stocks in ${c.where} show the ${t.name} outline in their screener ranges, ${passed.length} also passed the indicator screen (score ${MIN_SCREEN}+); ${list.length < passed.length ? `the best ${list.length} were` : list.length === 1 ? "it was" : `all ${list.length} were`} charted and read by the AI.`];
   emit({ type: "page", total: list.length });
   if (!list.length) {

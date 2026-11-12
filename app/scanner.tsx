@@ -85,9 +85,11 @@ const ANALYZERS: [Analyzer, string, string][] = [
   ["ai", "AI", "The AI reads each chart and judges it against the pattern"],
   ["rules", "Indicators (AI off)", "No AI and no chart calls: the whole market from one screener call. The pattern's outline from 1/3/6-month ranges, confirmed by RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume and candles"],
   ["compare", "AI vs indicators", "Both read the same charts, so you can see where they agree"],
-  ["screen_ai", "Indicator screen → AI", "The same filter as Indicators (AI off): pattern outline from the screener ranges plus RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume and candles, over the whole market in one TradingView call. Only the best 20 that pass get a chart and an AI read"],
+  ["screen_ai", "Indicator screen → AI", "The same filter as Indicators (AI off): pattern outline from the screener ranges plus RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume and candles, over the whole market in one TradingView call. Only the best 10, 20 or 30 that pass (you pick) get a chart and an AI read"],
 ];
-const ANALYZER_STORE = "keranos.analyzer.v1";
+const ANALYZER_STORE = "keranos.analyzer.v1", TOP_STORE = "keranos.top.v1";
+/** How many screened stocks "Indicator screen → AI" charts and sends to the AI (one get_ohlcv each). */
+const TOPS = [10, 20, 30] as const;
 const BY: Record<By, string> = { ai: "AI only", rule: "Indicators only", both: "AI + indicators" };
 /** Two backtest totals added (averages weighted by finished signals). */
 function addBt(a: Bt | undefined, b: Bt | undefined): Bt | undefined {
@@ -206,6 +208,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   const [analyzer, setAnalyzerState] = useState<Analyzer>("ai");
   useEffect(() => { try { const v = localStorage.getItem(ANALYZER_STORE); if (v === "rules" || v === "compare" || v === "screen_ai") setAnalyzerState(v); } catch { /* default */ } }, []);
   const setAnalyzer = (v: Analyzer) => { setAnalyzerState(v); try { localStorage.setItem(ANALYZER_STORE, v); } catch { /* this tab only */ } };
+  const [top, setTopState] = useState<(typeof TOPS)[number]>(20);
+  useEffect(() => { try { const v = Number(localStorage.getItem(TOP_STORE)); if (v === 10 || v === 30) setTopState(v); } catch { /* default */ } }, []);
+  const setTop = (v: (typeof TOPS)[number]) => { setTopState(v); try { localStorage.setItem(TOP_STORE, String(v)); } catch { /* this tab only */ } };
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ text: string; done?: number; total?: number } | null>(null);
   const [result, setResult] = useState<Saved | null>(null);
@@ -248,7 +253,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
     const label = t?.name ?? "Your image pattern";
     ctl.current = new AbortController();
     const signal = ctl.current.signal;
-    const body = { analyzer: mode, ai: currentModel(), verify: mode === "rules" ? null : currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
+    const body = { analyzer: mode, ...(mode === "screen_ai" ? { top } : {}), ai: currentModel(), verify: mode === "rules" ? null : currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
     // One saved scan grows as matches arrive, page after page.
     const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: [], checked: 0, shape, label, pattern: usingImage ? "image" : pattern, analyzer: mode };
     const notes: string[] = [];
@@ -379,6 +384,12 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
           <select className="scan-model" value={mode} disabled={usingImage} aria-label="Analyze with" title={usingImage ? "Your image is always read by the AI" : ANALYZERS.find((a) => a[0] === mode)?.[2]}
             onChange={(e) => setAnalyzer(e.target.value as Analyzer)}>
             {ANALYZERS.map(([id, l]) => <option key={id} value={id}>Analyze: {l}</option>)}
+          </select>
+        )}
+        {!busy && mode === "screen_ai" && (
+          <select className="scan-model" value={top} aria-label="How many stocks the AI reads" title="The best screened stocks get one chart call each and an AI read"
+            onChange={(e) => setTop(Number(e.target.value) as (typeof TOPS)[number])}>
+            {TOPS.map((n) => <option key={n} value={n}>AI reads top {n}</option>)}
           </select>
         )}
         {!busy && mode !== "rules" && <ModelSelect className="scan-model" />}
