@@ -538,28 +538,53 @@ function applyFilters<T extends Row>(rows: T[], f: Filters): T[] {
   });
 }
 
+/** Common RSI and score ranges, one tap each; "Custom" opens the number boxes. */
+const RSI_PRESETS: [string, string, string][] = [["Any", "", ""], ["Oversold < 30", "", "30"], ["30–70", "30", "70"], ["Overbought > 70", "70", ""]];
+const SCORE_PRESETS: [string, string][] = [["Any", ""], ["60+", "60"], ["75+", "75"]];
+
 function ResultTools({ rows, f, set, shown }: { rows: Row[]; f: Filters; set: (f: Filters) => void; shown: number }) {
   const sectors = useMemo(() => [...new Set(rows.map((r) => r.sector).filter(Boolean) as string[])].sort(), [rows]);
   const up = (p: Partial<Filters>) => set({ ...f, ...p });
   const box = (k: keyof Filters, ph: string, label: string) => (
     <input className="flt-n" inputMode="decimal" placeholder={ph} aria-label={label} value={f[k] as string} onChange={(e) => up({ [k]: e.target.value } as Partial<Filters>)} />);
   const active = JSON.stringify({ ...f, sort: "", dir: "" }) !== JSON.stringify({ ...NO_FILTERS, sort: "", dir: "" });
+  const rsiPreset = RSI_PRESETS.findIndex(([, lo, hi]) => lo === f.minRsi && hi === f.maxRsi);
+  const scorePreset = SCORE_PRESETS.findIndex(([, v]) => v === f.minScore);
+  const [more, setMore] = useState(false);
+  const showMore = more || !!f.minPx || !!f.maxPx || rsiPreset < 0 || scorePreset < 0;
   return (
     <div className="flt" role="search">
-      <input className="flt-q" type="search" placeholder="Search symbol, name, sector…" aria-label="Search matches" value={f.q} onChange={(e) => up({ q: e.target.value })} />
-      <select aria-label="Sector" value={f.sector} onChange={(e) => up({ sector: e.target.value })}>
-        <option value="">All sectors</option>{sectors.map((s) => <option key={s} value={s}>{s}</option>)}
-      </select>
-      <span className="flt-g"><span className="label">Price</span>{box("minPx", "min", "Minimum price")}–{box("maxPx", "max", "Maximum price")}</span>
-      <span className="flt-g"><span className="label">RSI</span>{box("minRsi", "0", "Minimum RSI")}–{box("maxRsi", "100", "Maximum RSI")}</span>
-      <span className="flt-g"><span className="label">Score ≥</span>{box("minScore", "0", "Minimum score")}</span>
-      <label className="flt-g"><input type="checkbox" checked={f.confirmed} onChange={(e) => up({ confirmed: e.target.checked })} /> Chart-confirmed only</label>
-      <span className="flt-g"><span className="label">Sort</span>
-        <select aria-label="Sort by" value={f.sort} onChange={(e) => up({ sort: e.target.value as Sort, dir: e.target.value === "name" ? "asc" : "desc" })}>
-          {SORTS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+      <div className="flt-row">
+        <input className="flt-q" type="search" placeholder="Search symbol, name or sector" aria-label="Search matches" value={f.q} onChange={(e) => up({ q: e.target.value })} />
+        <select aria-label="Sector" value={f.sector} onChange={(e) => up({ sector: e.target.value })}>
+          <option value="">All sectors</option>{sectors.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
-        <button type="button" className="btn flt-dir" aria-label={f.dir === "desc" ? "Highest first" : "Lowest first"} onClick={() => up({ dir: f.dir === "desc" ? "asc" : "desc" })}>{f.dir === "desc" ? "↓" : "↑"}</button></span>
-      {active && <button type="button" className="linkish" onClick={() => set({ ...NO_FILTERS, sort: f.sort, dir: f.dir })}>Clear filters ({shown} of {rows.length})</button>}
+        <span className="flt-sort">
+          <select aria-label="Sort by" value={f.sort} onChange={(e) => up({ sort: e.target.value as Sort, dir: e.target.value === "name" ? "asc" : "desc" })}>
+            {SORTS.map(([k, l]) => <option key={k} value={k}>Sort: {l}</option>)}
+          </select>
+          <button type="button" className="btn flt-dir" title={f.dir === "desc" ? "Highest first" : "Lowest first"} aria-label={f.dir === "desc" ? "Highest first" : "Lowest first"} onClick={() => up({ dir: f.dir === "desc" ? "asc" : "desc" })}>{f.dir === "desc" ? "↓" : "↑"}</button>
+        </span>
+      </div>
+      <div className="flt-row">
+        <span className="flt-g" role="group" aria-label="RSI"><span className="flt-l">RSI</span>
+          {RSI_PRESETS.map(([l, lo, hi], i) => <button key={l} type="button" className="chip" aria-pressed={i === rsiPreset} onClick={() => up({ minRsi: lo, maxRsi: hi })}>{l}</button>)}</span>
+        <span className="flt-g" role="group" aria-label="Score"><span className="flt-l">Score</span>
+          {SCORE_PRESETS.map(([l, v], i) => <button key={l} type="button" className="chip" aria-pressed={i === scorePreset} onClick={() => up({ minScore: v })}>{l}</button>)}</span>
+        <button type="button" className="chip" aria-pressed={f.confirmed} onClick={() => up({ confirmed: !f.confirmed })} title="Only matches you opened and the chart detector confirmed">✓ Chart-confirmed</button>
+        <button type="button" className="linkish" aria-expanded={showMore} onClick={() => setMore(!showMore)}>{showMore ? "Fewer filters" : "Price & custom ranges"}</button>
+      </div>
+      {showMore && (
+        <div className="flt-row flt-more">
+          <span className="flt-g"><span className="flt-l">Price</span>{box("minPx", "min", "Minimum price")}<span className="muted">to</span>{box("maxPx", "max", "Maximum price")}</span>
+          <span className="flt-g"><span className="flt-l">RSI</span>{box("minRsi", "0", "Minimum RSI")}<span className="muted">to</span>{box("maxRsi", "100", "Maximum RSI")}</span>
+          <span className="flt-g"><span className="flt-l">Score at least</span>{box("minScore", "0", "Minimum score")}</span>
+        </div>
+      )}
+      <div className="flt-foot">
+        <span className="muted"><b className="num">{shown}</b> of <span className="num">{rows.length}</span> matches</span>
+        {active && <button type="button" className="linkish" onClick={() => set({ ...NO_FILTERS, sort: f.sort, dir: f.dir })}>Clear filters</button>}
+      </div>
     </div>
   );
 }
