@@ -88,10 +88,18 @@ const CMDS: [string, string][] = [["brief", "brief"], ["analyze", "analyze"], ["
   ["pattern", "pattern double bottom SET100"], ["divergence", "RSI divergence"],
   ["SET dividends", "dividends SET"], ["earnings", "earnings this week"], ["macro US", "macro US"], ["macro TH", "macro TH"]];
 
+type WL = { id: string; name: string; type?: string; color?: string; active?: boolean; symbols: string[] };
+const WL_VIEW = "keranos.wlview.v1", WL_ADD = "keranos.wladd.v1";
+const FLAG_TH: Record<string, string> = { red: "แดง", blue: "น้ำเงิน", green: "เขียว", orange: "ส้ม", purple: "ม่วง", cyan: "ฟ้า", pink: "ชมพู" };
+const wlName = (w: WL) => w.type === "colored" ? `🚩 ${w.color ?? ""} flag${w.color && FLAG_TH[w.color] ? ` (ธง${FLAG_TH[w.color]})` : ""}` : w.name || `#${w.id}`;
+const store = (k: string) => { try { return typeof window === "undefined" ? null : localStorage.getItem(k); } catch { return null; } };
+const save = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+
 // ---------- page ----------
 export default function Desk() {
-  const [watchlistId, setWatchlistId] = useState<string | null>(null);
-  const [symbols, setSymbols] = useState<string[]>([]);
+  const [lists, setLists] = useState<WL[]>([]);
+  const [viewId, setViewId] = useState<string | null>(() => store(WL_VIEW));
+  const [addPick, setAddPick] = useState<string | null>(() => store(WL_ADD));
   const [wlError, setWlError] = useState<string | null>(null);
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [filter, setFilter] = useState<"all" | Market>("all");
@@ -116,16 +124,23 @@ export default function Desk() {
 
   const loadWatchlist = useCallback(async () => {
     try {
-      const d = await tv<{ watchlist?: { id?: number; symbols?: string[] } }>("mcp-watchlist-get-active-watchlist");
-      const w = d.watchlist ?? {};
-      setWatchlistId(w.id != null ? String(w.id) : null);
-      const syms = w.symbols ?? [];
-      setSymbols(syms);
-      setSelected((cur) => cur ?? syms.find((s) => market(s) === "US") ?? syms[0] ?? null);
+      const d = await tv<{ watchlists?: (Omit<WL, "id"> & { id: number | string })[] }>("mcp-watchlist-list-watchlists");
+      const all = (d.watchlists ?? []).map((w) => ({ ...w, id: String(w.id), symbols: (w.symbols ?? []).filter((x) => !x.startsWith("###")) }));
+      setLists(all);
       setWlError(null);
     } catch (e) { setWlError((e as Error).message); }
   }, []);
   useEffect(() => { loadWatchlist(); }, [loadWatchlist]);
+  // The list shown in the sidebar: the one picked here, else TradingView's active one.
+  const shown = lists.find((w) => w.id === viewId) ?? lists.find((w) => w.active) ?? lists[0];
+  // TradingView only adds symbols to named (custom) lists, not to the colour-flag lists, so adds go to a named one.
+  const named = lists.filter((w) => w.type !== "colored");
+  const target = named.find((w) => w.id === addPick) ?? (shown && shown.type !== "colored" ? shown : named[0]);
+  const watchlistId = target?.id ?? null;
+  const symbols = useMemo(() => shown?.symbols ?? [], [shown]);
+  useEffect(() => { setSelected((cur) => cur ?? symbols.find((s) => market(s) === "US") ?? symbols[0] ?? null); }, [symbols]);
+  const viewList = (id: string) => { setViewId(id); save(WL_VIEW, id); if (lists.find((w) => w.id === id)?.type !== "colored") { setAddPick(id); save(WL_ADD, id); } };
+  const pickTarget = (id: string) => { setAddPick(id); save(WL_ADD, id); };
 
   const quoteSet = useMemo(() => Array.from(new Set([...symbols, ...PULSE.map((p) => p[0]), ...(selected ? [selected] : [])])).slice(0, 50), [symbols, selected]);
   useEffect(() => {
@@ -155,7 +170,7 @@ export default function Desk() {
           </div>
         </nav>
         <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={view === "desk" ? selected : null} onSelect={open}
-          error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) open(s); loadWatchlist(); }} />
+          error={wlError} watchlistId={watchlistId} lists={lists} shown={shown} target={target} onView={viewList} onChanged={(s) => { if (s) open(s); loadWatchlist(); }} />
         <Alerts />
         <p className="foot">Data from TradingView, delayed or realtime per your plan. Agent&apos;s answers are research, not financial advice.</p>
       </aside>
@@ -188,7 +203,7 @@ export default function Desk() {
           {view === "desk" && (
             <Focus symbol={selected} quote={selected ? quotes[selected] : undefined}
               pattern={pattern?.symbol === selected ? pattern : null} patterns={patterns} onPickPattern={setPattern} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")}
-              watchlistId={watchlistId} inWatchlist={!!selected && symbols.includes(selected)} onWatchlistChanged={loadWatchlist} />
+              named={named} target={target} onPickTarget={pickTarget} onWatchlistChanged={loadWatchlist} />
           )}
         </div>
       </main>
@@ -206,7 +221,8 @@ function Icon({ d }: { d: string }) {
 
 // ---------- watchlist ----------
 function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter: "all" | Market; setFilter: (f: "all" | Market) => void;
-  selected: string | null; onSelect: (s: string) => void; error: string | null; watchlistId: string | null; onChanged: (s?: string) => void }) {
+  selected: string | null; onSelect: (s: string) => void; error: string | null; watchlistId: string | null; onChanged: (s?: string) => void;
+  lists: WL[]; shown?: WL; target?: WL; onView: (id: string) => void }) {
   const [value, setValue] = useState("");
   const [hint, setHint] = useState("Add ticker, e.g. SET:KBANK");
   const [busy, setBusy] = useState(false);
@@ -233,6 +249,10 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
   return (
     <section className="side-sec" aria-labelledby="wl-h">
       <div className="side-h"><h2 id="wl-h">Watchlist</h2><span className="label">{p.symbols.length ? `${p.symbols.length} symbols` : ""}</span></div>
+      {p.lists.length > 1 && (
+        <select className="wl-pick" value={p.shown?.id ?? ""} onChange={(e) => p.onView(e.target.value)} aria-label="TradingView watchlist to show">
+          {p.lists.map((w) => <option key={w.id} value={w.id}>{wlName(w)}{w.active ? " · active" : ""}</option>)}
+        </select>)}
       <div className="wl-filter chips" role="group" aria-label="Market filter">
         {(["all", "US", "SET", "CRYPTO"] as const).map((f) => (
           <button key={f} className="chip" aria-pressed={p.filter === f} onClick={() => p.setFilter(f)}>{f === "all" ? "All" : f === "CRYPTO" ? "Crypto" : f}</button>
@@ -240,7 +260,8 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
       </div>
       <ul className="wl">
         {p.error ? <li className="note warn">{p.error}</li>
-          : !p.symbols.length ? <li className="note">Loading your TradingView watchlist…</li>
+          : !p.lists.length ? <li className="note">Loading your TradingView watchlist…</li>
+          : !p.symbols.length ? <li className="note">This watchlist is empty.</li>
           : !list.length ? <li className="note">No symbols in this market yet.</li>
           : list.map((s) => {
             const q = p.quotes[s] ?? {};
@@ -258,8 +279,9 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
       </ul>
       <form className="wl-add" onSubmit={add}>
         <input id="wl-add-in" value={value} onChange={(e) => setValue(e.target.value)} placeholder={hint} aria-label="Add a symbol to the watchlist" autoComplete="off" />
-        <button className="btn" type="submit" disabled={busy}>Add</button>
+        <button className="btn" type="submit" disabled={busy || !p.watchlistId}>Add</button>
       </form>
+      {p.shown && p.target && p.shown.id !== p.target.id && <p className="wl-note muted">Adds go to “{wlName(p.target)}”. TradingView can&apos;t add to flag lists.</p>}
     </section>
   );
 }
@@ -267,9 +289,9 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
 // ---------- focus ----------
 const RANGES: [string, number, TvRange][] = [["1M", 22, "1M"], ["3M", 66, "3M"], ["6M", 126, "6M"], ["1Y", 252, "12M"]];
 
-function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern, onBackToScan, watchlistId, inWatchlist, onWatchlistChanged }: { symbol: string | null; quote?: Quote;
+function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern, onBackToScan, named, target, onPickTarget, onWatchlistChanged }: { symbol: string | null; quote?: Quote;
   pattern: PatternHit | null; patterns: PatternHit[]; onPickPattern: (p: PatternHit) => void; onClearPattern: () => void; onBackToScan: () => void;
-  watchlistId: string | null; inWatchlist: boolean; onWatchlistChanged: () => void }) {
+  named: WL[]; target?: WL; onPickTarget: (id: string) => void; onWatchlistChanged: () => void }) {
   const [bars, setBars] = useState<Bars | null>(null);
   const [tech, setTech] = useState<Tech | null>(null);
   const [news, setNews] = useState<Headline[] | null>(null);
@@ -329,7 +351,7 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
             <div className="px">{fmtPx(q.close)}<small className={cls(q.change)}>{q.change_abs != null ? `${q.change_abs > 0 ? "+" : ""}${fmtPx(q.change_abs)} ` : ""}{fmtPct(q.change)}</small></div>
           )}
         </div>
-        {symbol && <TvActions key={symbol} symbol={symbol} close={q.close ?? bars?.c?.at(-1)} watchlistId={watchlistId} inWatchlist={inWatchlist}
+        {symbol && <TvActions key={symbol} symbol={symbol} close={q.close ?? bars?.c?.at(-1)} named={named} target={target} onPickTarget={onPickTarget}
           onWatchlistChanged={onWatchlistChanged} levels={shown && shown.symbol === symbol ? { breakout: shown.breakout, invalidation: shown.invalidation } : undefined} />}
         <div className="chart-bar">
           {mode !== "tv" ? (
@@ -505,8 +527,8 @@ const COND_TH: Record<AlertCond, string> = { cross_up: "ตัดขึ้นเ
 const COND_EN: Record<AlertCond, string> = { cross_up: "crosses above", cross_down: "crosses below", greater: "is above", less: "is below" };
 
 // Writes to TradingView from the stock header. The click is the confirmation, the same as a Confirm button in the Agent.
-function TvActions({ symbol, close, watchlistId, inWatchlist, onWatchlistChanged, levels }: { symbol: string; close?: number; watchlistId: string | null;
-  inWatchlist: boolean; onWatchlistChanged: () => void; levels?: { breakout?: number | null; invalidation?: number | null } }) {
+function TvActions({ symbol, close, named, target, onPickTarget, onWatchlistChanged, levels }: { symbol: string; close?: number; named: WL[]; target?: WL;
+  onPickTarget: (id: string) => void; onWatchlistChanged: () => void; levels?: { breakout?: number | null; invalidation?: number | null } }) {
   const lang = useLang();
   const th = lang === "th";
   const words = th ? COND_TH : COND_EN;
@@ -517,6 +539,7 @@ function TvActions({ symbol, close, watchlistId, inWatchlist, onWatchlistChanged
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const ticker = symbol.split(":")[1] ?? symbol;
+  const inWatchlist = !!target?.symbols.includes(symbol);
   const round = (n: number) => Number(n.toPrecision(6));
   // A price above the last close is a cross-up alert, below is a cross-down.
   const pick = (n: number) => { setPrice(String(round(n))); if (close != null) setCond(n >= close ? "cross_up" : "cross_down"); };
@@ -527,12 +550,12 @@ function TvActions({ symbol, close, watchlistId, inWatchlist, onWatchlistChanged
   ];
 
   const addWl = async () => {
-    if (!watchlistId) { setMsg({ ok: false, text: th ? "ไม่พบ watchlist ที่ใช้งานอยู่ใน TradingView" : "No active TradingView watchlist found." }); return; }
+    if (!target) { setMsg({ ok: false, text: th ? "ไม่พบ watchlist แบบตั้งชื่อใน TradingView ให้สร้างสักอันก่อน" : "No named TradingView watchlist found. Create one first." }); return; }
     setAdding(true); setMsg(null);
     try {
-      await tv("mcp-watchlist-add-to-watchlist", { watchlist_id: watchlistId, symbols: [symbol] });
+      await tv("mcp-watchlist-add-to-watchlist", { watchlist_id: target.id, symbols: [symbol] });
       onWatchlistChanged();
-      setMsg({ ok: true, text: th ? `เพิ่ม ${ticker} เข้า watchlist แล้ว` : `Added ${ticker} to your watchlist.` });
+      setMsg({ ok: true, text: th ? `เพิ่ม ${ticker} เข้า “${wlName(target)}” แล้ว` : `Added ${ticker} to “${wlName(target)}”.` });
     } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
     setAdding(false);
   };
@@ -553,6 +576,8 @@ function TvActions({ symbol, close, watchlistId, inWatchlist, onWatchlistChanged
   return (
     <div className="tv-act">
       <div className="tv-act-row">
+        {named.length > 1 && <select className="tv-wl" value={target?.id ?? ""} onChange={(e) => { onPickTarget(e.target.value); setMsg(null); }} aria-label="Watchlist to add to">
+          {named.map((w) => <option key={w.id} value={w.id}>{wlName(w)}</option>)}</select>}
         <button className="btn" onClick={addWl} disabled={adding || inWatchlist} aria-label={`Add ${ticker} to TradingView watchlist`}>
           {inWatchlist ? (th ? "✓ อยู่ใน Watchlist" : "✓ In watchlist") : adding ? "…" : (th ? "☆ เพิ่มเข้า Watchlist" : "☆ Add to watchlist")}</button>
         <button className="btn" aria-expanded={open} onClick={() => { if (!open && !price && presets[0]) pick(presets[0][1]); setOpen(!open); setMsg(null); }}>
