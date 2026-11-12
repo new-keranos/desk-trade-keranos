@@ -19,7 +19,7 @@ Rules:
 - Flag thin liquidity and earnings within 7 days.
 - Give entry, stop or target levels only when asked, as levels to watch, never as orders.
 - You cannot place trades. For alerts or watchlist changes, call propose_alert or propose_watchlist_change; the dashboard shows Neal a Confirm button. Never claim the change is done.
-- Reply in the language Neal writes in (English or Thai). Keep answers under 150 words unless asked for more.
+- Reply in the language the context line sets (Thai by default; keep tickers, indicator names and numbers as they are). Keep answers under 150 words unless asked for more.
 - End any buy or sell discussion with: Not financial advice.
 
 Commands: brief (watchlist summary: movers, ratings, news, earnings this week), analyze <ticker>, compare <a> <b>, scan <style> <market>, news <ticker>, earnings <period>, dividends <market>, macro <US|TH>, alert <ticker> <above|below> <price>, watch <add|remove> <ticker>,
@@ -54,7 +54,7 @@ const clip = (v: unknown) => {
 
 /** Provider-neutral tool definition: JSON Schema input, zod validation, server-side runner. */
 export type ToolSpec = { name: string; description: string; input_schema: { type: "object"; properties: Record<string, unknown>; required?: string[] } };
-export type NovaContext = { watchlist: string[]; selected: string | null; tv: TvCaller; ai: ModelChoice };
+export type NovaContext = { watchlist: string[]; selected: string | null; tv: TvCaller; ai: ModelChoice; lang?: "th" | "en" };
 
 type ToolDef = {
   tool: ToolSpec;
@@ -270,7 +270,7 @@ export async function executeTool(name: string, input: unknown, emit: (e: NovaEv
 
 export const MAX_ROUNDS = 8;
 export const contextLine = (ctx: NovaContext) =>
-  `Today is ${new Date().toISOString().slice(0, 10)}. Selected symbol: ${ctx.selected ?? "none"}. Watchlist: ${ctx.watchlist.join(", ") || "empty"}.`;
+  `Today is ${new Date().toISOString().slice(0, 10)}. Selected symbol: ${ctx.selected ?? "none"}. Watchlist: ${ctx.watchlist.join(", ") || "empty"}. ${ctx.lang === "en" ? "Reply in English." : "Reply in Thai."}`;
 export const OUT_OF_ROUNDS = "_Stopped after several data lookups. Ask a narrower question to continue._";
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };

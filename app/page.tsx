@@ -6,6 +6,8 @@ import Scanner, { Thumbs, type PatternHit } from "./scanner";
 import Candles, { type Ohlcv } from "./candles";
 import { confirmOnChart, recordCheck, type Confirmed } from "./confirm";
 import { currentModel, ModelSelect } from "./model";
+import { currentLang, setLang, useLang } from "./lang";
+import { LANGS, tr, trLabel } from "@/lib/i18n";
 import { askRelogin, blockedText, blockTv, postWithRelogin, tvBlocked } from "./tvblock";
 import { DIV_LABEL, findDivergences } from "@/lib/scan/indicators";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
@@ -96,6 +98,7 @@ export default function Desk() {
   const [selected, setSelected] = useState<string | null>(null);
   const [connect, setConnect] = useState<{ text: string; fresh?: boolean } | null>(null);
   const [view, setView] = useState<"desk" | "scanner">("desk");
+  const lang = useLang();
   const [pattern, setPattern] = useState<PatternHit | null>(null);
   // Every match the scan found on the same stock, so they can be shown one at a time.
   const [patterns, setPatterns] = useState<PatternHit[]>([]);
@@ -146,6 +149,10 @@ export default function Desk() {
           <div className="nav-h">Explore</div>
           <button className="nav-i" aria-current={view === "desk"} onClick={() => setView("desk")}><Icon d="M3 17l5-6 4 3 5-7 4 4M3 21h18" />Desk</button>
           <button className="nav-i" aria-current={view === "scanner"} onClick={() => setView("scanner")}><Icon d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15zM16 16l5 5M6.5 12l2.5-3 2 2 2.5-3.5" />Pattern scanner</button>
+          <div className="nav-lang" role="group" aria-label="Language for rule results, AI and Agent">
+            <span className="nav-h">ภาษา · Language</span>
+            <span className="chips">{LANGS.map(([id, l]) => <button key={id} type="button" className="chip" aria-pressed={lang === id} onClick={() => setLang(id)}>{l}</button>)}</span>
+          </div>
         </nav>
         <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={view === "desk" ? selected : null} onSelect={open}
           error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) open(s); loadWatchlist(); }} />
@@ -180,7 +187,8 @@ export default function Desk() {
           <Scanner hidden={view !== "scanner"} onOpen={(hit, same) => { setPattern(hit); setPatterns(same); open(hit.symbol); document.querySelector(".main")?.scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }} />
           {view === "desk" && (
             <Focus symbol={selected} quote={selected ? quotes[selected] : undefined}
-              pattern={pattern?.symbol === selected ? pattern : null} patterns={patterns} onPickPattern={setPattern} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")} />
+              pattern={pattern?.symbol === selected ? pattern : null} patterns={patterns} onPickPattern={setPattern} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")}
+              watchlistId={watchlistId} inWatchlist={!!selected && symbols.includes(selected)} onWatchlistChanged={loadWatchlist} />
           )}
         </div>
       </main>
@@ -259,8 +267,9 @@ function Watchlist(p: { symbols: string[]; quotes: Record<string, Quote>; filter
 // ---------- focus ----------
 const RANGES: [string, number, TvRange][] = [["1M", 22, "1M"], ["3M", 66, "3M"], ["6M", 126, "6M"], ["1Y", 252, "12M"]];
 
-function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern, onBackToScan }: { symbol: string | null; quote?: Quote;
-  pattern: PatternHit | null; patterns: PatternHit[]; onPickPattern: (p: PatternHit) => void; onClearPattern: () => void; onBackToScan: () => void }) {
+function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern, onBackToScan, watchlistId, inWatchlist, onWatchlistChanged }: { symbol: string | null; quote?: Quote;
+  pattern: PatternHit | null; patterns: PatternHit[]; onPickPattern: (p: PatternHit) => void; onClearPattern: () => void; onBackToScan: () => void;
+  watchlistId: string | null; inWatchlist: boolean; onWatchlistChanged: () => void }) {
   const [bars, setBars] = useState<Bars | null>(null);
   const [tech, setTech] = useState<Tech | null>(null);
   const [news, setNews] = useState<Headline[] | null>(null);
@@ -272,8 +281,13 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
   const tvOk = !!symbol && market(symbol) !== "SET";
   useEffect(() => { setMode(tvOk ? "tv" : "candles"); }, [symbol, tvOk]);
   // A screener-only match has no marks yet: the pattern detector finds them on the chart loaded below.
-  const shown = useMemo<Confirmed | null>(() => (pattern && bars?.c?.length && pattern.symbol === symbol ? confirmOnChart(pattern, bars) : pattern), [pattern, bars, symbol]);
-  useEffect(() => { if (shown?.chart) recordCheck(shown); }, [shown]);
+  const lang = useLang();
+  const confirmed = useMemo<Confirmed | null>(() => (pattern && bars?.c?.length && pattern.symbol === symbol ? confirmOnChart(pattern, bars) : pattern), [pattern, bars, symbol]);
+  // Chart labels in the reader's language (the AI already writes them in it).
+  const shown = useMemo<Confirmed | null>(() => confirmed && lang === "th" ? { ...confirmed,
+    points: confirmed.points?.map((p) => ({ ...p, label: p.label && trLabel(p.label, lang) })),
+    lines: confirmed.lines?.map((l) => ({ ...l, label: trLabel(l.label, lang) })) } : confirmed, [confirmed, lang]);
+  useEffect(() => { if (confirmed?.chart) recordCheck(confirmed); }, [confirmed]);
   // A pattern from the scanner is drawn on our candles, zoomed to fit.
   useEffect(() => {
     if (!shown) return;
@@ -315,6 +329,8 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
             <div className="px">{fmtPx(q.close)}<small className={cls(q.change)}>{q.change_abs != null ? `${q.change_abs > 0 ? "+" : ""}${fmtPx(q.change_abs)} ` : ""}{fmtPct(q.change)}</small></div>
           )}
         </div>
+        {symbol && <TvActions key={symbol} symbol={symbol} close={q.close ?? bars?.c?.at(-1)} watchlistId={watchlistId} inWatchlist={inWatchlist}
+          onWatchlistChanged={onWatchlistChanged} levels={shown && shown.symbol === symbol ? { breakout: shown.breakout, invalidation: shown.invalidation } : undefined} />}
         <div className="chart-bar">
           {mode !== "tv" ? (
             <div className="ranges chips" role="group" aria-label="Chart range">
@@ -335,7 +351,7 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
           {mode === "tv" && symbol ? <TvChart symbol={symbol} range={shown ? rangeSince(shown.from) : undefined} />
             : err.chart ? <div className="note warn">{err.chart}</div>
             : !bars?.c?.length ? <div className="note">Loading chart…</div>
-            : mode === "candles" ? <Candles key={(shown?.id ?? "plain") + (shown?.chart ? ":c" : "")} bars={bars} visible={range} overlay={shown} divergences={showDiv} />
+            : mode === "candles" ? <Candles key={(shown?.id ?? "plain") + (shown?.chart ? ":c" : "") + lang} bars={bars} visible={range} overlay={shown} divergences={showDiv} />
             : <Chart bars={{ t: bars.t.slice(-252), c: bars.c.slice(-252) } as Bars} range={range} highlight={shown} />}
         </div>
         {mode === "candles" && showDiv && bars?.c?.length ? <DivNote bars={bars} /> : null}
@@ -383,6 +399,7 @@ function DivNote({ bars }: { bars: Bars }) {
 }
 
 function PatternPane({ p, all, onPick, onClear, onBack }: { p: Confirmed; all: PatternHit[]; onPick: (p: PatternHit) => void; onClear: () => void; onBack: () => void }) {
+  const lang = useLang();
   const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
     `analyze pattern ${p.symbol} ${p.label} ${p.bars ? `${p.from} ${p.to}` : "(recent, from screener ranges)"} (${p.by === "rule" ? `scanner indicators: score ${p.score}` : `scanner AI: ${p.score}% sure`}, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
@@ -398,8 +415,8 @@ function PatternPane({ p, all, onPick, onClear, onBack }: { p: Confirmed; all: P
               : <><span className="stage">chart doesn&apos;t confirm</span> Found from screener ranges and indicators; the pattern detector {p.chart.score ? `scored it only ${p.chart.score} on the daily chart` : "didn't find it on the daily chart"}{p.points?.length ? ", its best reading is drawn below" : ""}</>)
             : p.bars ? <>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · the {p.by === "rule" ? "detector's" : "AI's"} points and lines are drawn on the chart below</>
             : <>Found from screener ranges and indicators only; checking it on the chart…</>}</div>
-          {p.summary && <div className="hit-ai" style={{ marginTop: 6 }}>{p.summary}</div>}
-          {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {c}</span>)}</div>}
+          {p.summary && <div className="hit-ai" style={{ marginTop: 6 }}>{tr(p.summary, lang)}</div>}
+          {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {tr(c, lang)}</span>)}</div>}
           {(p.breakout != null || p.invalidation != null) && <div className="hit-levels num" style={{ marginTop: 4 }}>
             {p.breakout != null && <span>Breakout level <b>{fmtPx(p.breakout)}</b></span>}
             {p.invalidation != null && <span className="muted">Invalid past {fmtPx(p.invalidation)}</span>}</div>}</div>
@@ -483,6 +500,82 @@ function TechBody({ t }: { t: Tech }) {
 }
 
 // ---------- alerts ----------
+type AlertCond = "cross_up" | "cross_down" | "greater" | "less";
+const COND_TH: Record<AlertCond, string> = { cross_up: "ตัดขึ้นเหนือ", cross_down: "ตัดลงใต้", greater: "อยู่เหนือ", less: "อยู่ใต้" };
+const COND_EN: Record<AlertCond, string> = { cross_up: "crosses above", cross_down: "crosses below", greater: "is above", less: "is below" };
+
+// Writes to TradingView from the stock header. The click is the confirmation, the same as a Confirm button in the Agent.
+function TvActions({ symbol, close, watchlistId, inWatchlist, onWatchlistChanged, levels }: { symbol: string; close?: number; watchlistId: string | null;
+  inWatchlist: boolean; onWatchlistChanged: () => void; levels?: { breakout?: number | null; invalidation?: number | null } }) {
+  const lang = useLang();
+  const th = lang === "th";
+  const words = th ? COND_TH : COND_EN;
+  const [adding, setAdding] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [price, setPrice] = useState("");
+  const [cond, setCond] = useState<AlertCond>("cross_up");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const ticker = symbol.split(":")[1] ?? symbol;
+  const round = (n: number) => Number(n.toPrecision(6));
+  // A price above the last close is a cross-up alert, below is a cross-down.
+  const pick = (n: number) => { setPrice(String(round(n))); if (close != null) setCond(n >= close ? "cross_up" : "cross_down"); };
+  const presets: [string, number][] = [
+    ...(levels?.breakout != null ? [[th ? "จุดเบรก" : "Breakout", levels.breakout] as [string, number]] : []),
+    ...(levels?.invalidation != null ? [[th ? "จุดผิดรูป" : "Invalidation", levels.invalidation] as [string, number]] : []),
+    ...(close != null ? ([[th ? "ราคาล่าสุด" : "Last", close], ["+5%", close * 1.05], ["−5%", close * 0.95]] as [string, number][]) : []),
+  ];
+
+  const addWl = async () => {
+    if (!watchlistId) { setMsg({ ok: false, text: th ? "ไม่พบ watchlist ที่ใช้งานอยู่ใน TradingView" : "No active TradingView watchlist found." }); return; }
+    setAdding(true); setMsg(null);
+    try {
+      await tv("mcp-watchlist-add-to-watchlist", { watchlist_id: watchlistId, symbols: [symbol] });
+      onWatchlistChanged();
+      setMsg({ ok: true, text: th ? `เพิ่ม ${ticker} เข้า watchlist แล้ว` : `Added ${ticker} to your watchlist.` });
+    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    setAdding(false);
+  };
+
+  const create = async () => {
+    const n = Number(price);
+    if (!Number.isFinite(n) || n <= 0) { setMsg({ ok: false, text: th ? "ใส่ราคาให้ถูกต้องก่อน" : "Enter a valid price." }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      await tv("mcp-tv-create-alert", { symbol, condition: cond, price: n, name: `${ticker} ${COND_EN[cond]} ${n}`.slice(0, 300), resolution: "1D" });
+      window.dispatchEvent(new Event("nova:alerts-changed"));
+      setMsg({ ok: true, text: th ? `ตั้ง alert แล้ว: ${ticker} ${words[cond]} ${fmtPx(n)}` : `Alert set: ${ticker} ${words[cond]} ${fmtPx(n)}` });
+      setOpen(false);
+    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="tv-act">
+      <div className="tv-act-row">
+        <button className="btn" onClick={addWl} disabled={adding || inWatchlist} aria-label={`Add ${ticker} to TradingView watchlist`}>
+          {inWatchlist ? (th ? "✓ อยู่ใน Watchlist" : "✓ In watchlist") : adding ? "…" : (th ? "☆ เพิ่มเข้า Watchlist" : "☆ Add to watchlist")}</button>
+        <button className="btn" aria-expanded={open} onClick={() => { if (!open && !price && presets[0]) pick(presets[0][1]); setOpen(!open); setMsg(null); }}>
+          🔔 {th ? "ตั้ง Alert ใน TradingView" : "Set TradingView alert"}</button>
+        {msg && <span className={msg.ok ? "tv-ok" : "tv-err"} role="status">{msg.text}</span>}
+      </div>
+      {open && (
+        <form className="tv-alert" onSubmit={(e) => { e.preventDefault(); create(); }}>
+          <span className="muted">{th ? `เมื่อ ${ticker}` : `When ${ticker}`}</span>
+          <select value={cond} onChange={(e) => setCond(e.target.value as AlertCond)} aria-label="Condition">
+            {(Object.keys(words) as AlertCond[]).map((c) => <option key={c} value={c}>{words[c]}</option>)}
+          </select>
+          <input className="num" type="number" step="any" min="0" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} aria-label="Price" />
+          <button className="btn primary" type="submit" disabled={busy}>{busy ? "…" : th ? "สร้าง Alert" : "Create alert"}</button>
+          {!!presets.length && <div className="chips tv-presets">{presets.map(([l, v]) => (
+            <button type="button" key={l} className="chip" aria-pressed={price === String(round(v))} onClick={() => pick(v)}>{l} <span className="num muted">{fmtPx(v)}</span></button>))}</div>}
+          <small className="muted">{th ? "แจ้งเตือนบนกราฟรายวัน (1D) · ดูหรือลบได้ในแผง Alerts" : "Fires on the daily (1D) chart · manage it in the Alerts panel"}</small>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function Alerts() {
   const [alerts, setAlerts] = useState<Alert[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -548,7 +641,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
     let answer = "";
     try {
       const res = await postWithRelogin("/api/nova", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
-        body: JSON.stringify({ messages: history, effort, watchlist: symbols, selected, ai: currentModel() }) });
+        body: JSON.stringify({ messages: history, effort, watchlist: symbols, selected, lang: currentLang(), ai: currentModel() }) });
       if (res.status === 401) { location.href = "/login"; return; }
       if (res.status === 409) {
         const j = await res.json().catch(() => ({}));

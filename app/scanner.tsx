@@ -7,6 +7,8 @@ import { blockedText, blockTv, postWithRelogin, tvBlocked } from "./tvblock";
 import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
 import { CHECK_EVENT, loadChecks } from "./confirm";
+import { useLang } from "./lang";
+import { tr, trNote } from "@/lib/i18n";
 
 type Row = { id?: string; symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
@@ -201,6 +203,7 @@ async function scanPage(body: object, signal: AbortSignal, on: (ev: any) => void
 
 export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, same: PatternHit[]) => void; hidden?: boolean }) {
   const [pattern, setPattern] = useState<string>("double_bottom");
+  const lang = useLang();
   const [img, setImg] = useState<Img | null>(null);
   const [universe, setUniverse] = useState("SET100");
   const [themes, setThemes] = useState<string[]>([]);
@@ -253,7 +256,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
     const label = t?.name ?? "Your image pattern";
     ctl.current = new AbortController();
     const signal = ctl.current.signal;
-    const body = { analyzer: mode, ...(mode === "screen_ai" ? { top } : {}), ai: currentModel(), verify: mode === "rules" ? null : currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
+    const body = { analyzer: mode, lang, ...(mode === "screen_ai" ? { top } : {}), ai: currentModel(), verify: mode === "rules" ? null : currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
     // One saved scan grows as matches arrive, page after page.
     const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: [], checked: 0, shape, label, pattern: usingImage ? "image" : pattern, analyzer: mode };
     const notes: string[] = [];
@@ -412,7 +415,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
             {result.rows.length > 0 && <button type="button" className="btn" onClick={() => downloadCsv(result)}>Download CSV</button>}
           </div>
           {(result.backtest || result.compare || result.analyzer === "rules" || result.analyzer === "compare") && <Accuracy r={result} votes={votes} />}
-          {result.note && <div className="note">{result.note}</div>}
+          {result.note && <div className="note">{trNote(result.note, lang)}</div>}
           {!result.rows.length && <div className="note">{busy ? "No matches yet. They appear here as each batch of charts is read." : result.analyzer === "rules" ? "No stock showed the pattern's outline and passed the indicator screen. Try another pattern or market." : <>The AI wasn&apos;t at least 70% sure about any chart. Try another pattern length, market or theme.</>}</div>}
           {result.rows.length > 0 && <ResultTools rows={result.rows} f={filt} set={setFilt} shown={view.length} />}
           {result.rows.length > 0 && !view.length && <div className="note">No match fits these filters.</div>}
@@ -430,9 +433,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
                     <span>{r.bars ? <>{r.bars} days · {fmtDay(r.from)} – {fmtDay(r.to)} · height {r.heightPct}%</> : <>Screener snapshot {fmtDay(r.to)} · 3-month range {r.heightPct}%</>}</span>
                     {r.sector && <span className="muted">{r.sector}</span>}
                     {r.m && (r.m.rsi != null || r.m.p1 != null) && <span className="hit-m num muted">{r.m.rsi != null && <>RSI {Math.round(r.m.rsi)}</>}{r.m.p1 != null && <> · 1M <span className={cls(r.m.p1)}>{fmtPct(r.m.p1)}</span></>}{r.m.p3 != null && <> · 3M <span className={cls(r.m.p3)}>{fmtPct(r.m.p3)}</span></>}{r.m.rv != null && <> · Vol {r.m.rv}×</>}</span>}
-                    {r.summary && <span className="hit-ai">{r.summary}</span>}
-                    {!!r.checks?.length && <span className="hit-checks">{r.checks.map((c) => <span key={c}>✓ {c}</span>)}</span>}
-                    {!!r.indicators?.length && <span className="hit-checks ind">{r.indicators.map((c) => <span key={c.text} className={c.ok ? "" : "no"}>{c.ok ? "✓" : "✗"} {c.text}</span>)}</span>}
+                    {r.summary && <span className="hit-ai">{tr(r.summary, lang)}</span>}
+                    {!!r.checks?.length && <span className="hit-checks">{r.checks.map((c) => <span key={c}>✓ {tr(c, lang)}</span>)}</span>}
+                    {!!r.indicators?.length && <span className="hit-checks ind">{r.indicators.map((c) => <span key={c.text} className={c.ok ? "" : "no"}>{c.ok ? "✓" : "✗"} {tr(c.text, lang)}</span>)}</span>}
                     {(r.breakout != null || r.invalidation != null) && <span className="hit-levels num">
                       {r.breakout != null && <span>Breakout level <b>{fmtPx(r.breakout)}</b></span>}
                       {r.invalidation != null && <span className="muted">Invalid past {fmtPx(r.invalidation)}</span>}</span>}
