@@ -287,3 +287,13 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .acc-c { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
 .acc-c b { font-size: 20px; }
 .hit-score small { display: block; font-size: 11px; font-weight: 400; }
+
+/* Scanner results: search, filters, sort, pages */
+.flt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0 4px; font-size: 12px; }
+.flt input, .flt select { background: var(--sunk); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; }
+.flt-q { flex: 1 1 220px; min-width: 160px; }
+.flt-g { display: inline-flex; align-items: center; gap: 4px; }
+.flt-n { width: 64px; }
+.flt-dir { padding: 3px 9px; }
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 10px 0; font-size: 12px; }
+.hit-m { font-size: 11px; }

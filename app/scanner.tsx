@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cls, fmtPct, fmtPx, market } from "./format";
 import { currentModel, currentVerify, ModelSelect, VerifySelect } from "./model";
 import { blockedText, blockTv, postWithRelogin, tvBlocked } from "./tvblock";
 import { N } from "@/lib/scan/match";
 import { sampleAnchors, TEMPLATES, type Bias } from "@/lib/scan/templates";
+import { CHECK_EVENT, loadChecks } from "./confirm";
 
 type Row = { id?: string; symbol: string; name: string; description?: string; sector?: string; close?: number; change?: number;
   score: number; bars: number; from: string; to: string; heightPct: number; closes: number[];
@@ -13,7 +14,9 @@ type Row = { id?: string; symbol: string; name: string; description?: string; se
   lines?: { from: { date: string; price: number }; to: { date: string; price: number }; role: "upper" | "lower" | "level"; label: string; extend: boolean }[];
   stage?: string; summary?: string; breakout?: number; invalidation?: number; verified?: boolean;
   /** Who found it (compare and indicator scans), the indicator score on an AI match, the indicator checks and this stock's backtest. */
-  by?: By; rule?: number; indicators?: { ok: boolean; text: string }[]; bt?: Bt };
+  by?: By; rule?: number; indicators?: { ok: boolean; text: string }[]; bt?: Bt;
+  /** Screener figures: RSI, 1/3-month performance %, volume vs 10-day average, market cap, industry. */
+  m?: { rsi?: number; p1?: number; p3?: number; rv?: number; cap?: number; industry?: string } };
 type By = "ai" | "rule" | "both";
 type Bt = { signals: number; wins: number; losses: number; open: number; avgRet: number; horizon: number };
 type Analyzer = "ai" | "rules" | "compare" | "screen_ai";
@@ -219,6 +222,13 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   // Indicator rules know the built-in patterns only; an image always goes to the AI.
   const mode: Analyzer = usingImage ? "ai" : analyzer;
   const votes = useVoteScore(result?.pattern);
+  // Search, filters, sort and pages over the results (in the browser; no new TradingView calls).
+  const [filt, setFilt] = useState<Filters>(NO_FILTERS);
+  const [page, setPage] = useState(0);
+  const allHits = useMemo(() => (result ? hitsOf(result) : []), [result]);
+  const view = useMemo(() => applyFilters(allHits, filt), [allHits, filt]);
+  const pages = Math.max(1, Math.ceil(view.length / PER_PAGE)), pageAt = Math.min(page, pages - 1);
+  useEffect(() => setPage(0), [filt, result?.id]);
   const toggleTheme = (t: string) => setThemes((x) => (x.includes(t) ? x.filter((y) => y !== t) : [...x, t]));
 
   async function pick(file?: File | null) {
@@ -393,9 +403,11 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
           {(result.backtest || result.compare || result.analyzer === "rules" || result.analyzer === "compare") && <Accuracy r={result} votes={votes} />}
           {result.note && <div className="note">{result.note}</div>}
           {!result.rows.length && <div className="note">{busy ? "No matches yet. They appear here as each batch of charts is read." : result.analyzer === "rules" ? "No stock showed the pattern's outline and passed the indicator screen. Try another pattern or market." : <>The AI wasn&apos;t at least 70% sure about any chart. Try another pattern length, market or theme.</>}</div>}
+          {result.rows.length > 0 && <ResultTools rows={result.rows} f={filt} set={setFilt} shown={view.length} />}
+          {result.rows.length > 0 && !view.length && <div className="note">No match fits these filters.</div>}
           <ul className="hits">
-            {hitsOf(result).map((r, _i, all) => {
-              const same = all.filter((x) => x.symbol === r.symbol);
+            {view.slice(pageAt * PER_PAGE, (pageAt + 1) * PER_PAGE).map((r) => {
+              const same = allHits.filter((x) => x.symbol === r.symbol);
               return (
               <li key={r.id} className="hit">
                 <button type="button" onClick={() => onOpen(r, same)} aria-label={`Open ${r.symbol}, ${r.by === "rule" ? "indicator score" : "AI"} ${r.score}${r.by === "rule" ? "" : "% sure"}`}>
@@ -406,6 +418,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
                     <span className="num">{fmtPx(r.close)} <span className={cls(r.change)}>{fmtPct(r.change)}</span></span>
                     <span>{r.bars ? <>{r.bars} days · {fmtDay(r.from)} – {fmtDay(r.to)} · height {r.heightPct}%</> : <>Screener snapshot {fmtDay(r.to)} · 3-month range {r.heightPct}%</>}</span>
                     {r.sector && <span className="muted">{r.sector}</span>}
+                    {r.m && (r.m.rsi != null || r.m.p1 != null) && <span className="hit-m num muted">{r.m.rsi != null && <>RSI {Math.round(r.m.rsi)}</>}{r.m.p1 != null && <> · 1M <span className={cls(r.m.p1)}>{fmtPct(r.m.p1)}</span></>}{r.m.p3 != null && <> · 3M <span className={cls(r.m.p3)}>{fmtPct(r.m.p3)}</span></>}{r.m.rv != null && <> · Vol {r.m.rv}×</>}</span>}
                     {r.summary && <span className="hit-ai">{r.summary}</span>}
                     {!!r.checks?.length && <span className="hit-checks">{r.checks.map((c) => <span key={c}>✓ {c}</span>)}</span>}
                     {!!r.indicators?.length && <span className="hit-checks ind">{r.indicators.map((c) => <span key={c.text} className={c.ok ? "" : "no"}>{c.ok ? "✓" : "✗"} {c.text}</span>)}</span>}
@@ -418,6 +431,11 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
               </li>
             ); })}
           </ul>
+          {pages > 1 && <div className="pager" role="navigation" aria-label="Result pages">
+            <button type="button" className="btn" disabled={pageAt === 0} onClick={() => setPage(pageAt - 1)}>‹ Prev</button>
+            <span className="muted">Page {pageAt + 1} of {pages} · {view.length} matches</span>
+            <button type="button" className="btn" disabled={pageAt >= pages - 1} onClick={() => setPage(pageAt + 1)}>Next ›</button>
+          </div>}
           <p className="note">{result.analyzer === "rules" ? "The score is the share of indicator signals that agree with the pattern (0-100), from screener data only, no AI." : "The % is the AI's confidence after reading the daily bars."} It is a starting point for your own chart reading, not a confirmed setup or advice.</p>
         </div>
       )}
@@ -442,8 +460,21 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
 }
 
 /** How well each method did: the indicator backtest over the loaded charts, AI vs indicators, and your 👍 rate. */
+/** How often opening a screener-only match on the chart confirmed it, for one pattern. */
+function useChartChecks(pattern?: string) {
+  const [v, setV] = useState({ ok: 0, all: 0 });
+  useEffect(() => {
+    const sync = () => { const c = loadChecks().filter((x) => x.pattern === pattern); setV({ ok: c.filter((x) => x.ok).length, all: c.length }); };
+    sync();
+    window.addEventListener(CHECK_EVENT, sync);
+    return () => window.removeEventListener(CHECK_EVENT, sync);
+  }, [pattern]);
+  return v;
+}
+
 function Accuracy({ r, votes }: { r: Saved; votes: Record<By, { good: number; all: number }> | null }) {
   const b = r.backtest, closed = b ? b.signals - b.open : 0;
+  const cc = useChartChecks(r.pattern);
   const rate = (x: { good: number; all: number }) => (x.all ? `${Math.round((100 * x.good) / x.all)}% (${x.good} of ${x.all})` : "no votes yet");
   return (
     <div className="acc">
@@ -453,9 +484,71 @@ function Accuracy({ r, votes }: { r: Saved; votes: Record<By, { good: number; al
       {r.compare && <div className="acc-c"><div className="label">AI vs indicators</div>
         <b className="num">{r.compare.both} <small className="muted">both</small></b>
         <span className="muted">AI only {r.compare.ai} · indicators only {r.compare.rule}</span></div>}
+      {r.analyzer === "rules" && <div className="acc-c"><div className="label">Chart confirms the screener</div>
+        <b className="num">{cc.all ? `${Math.round((100 * cc.ok) / cc.all)}%` : "–"}</b>
+        <span className="muted">{cc.all ? `${cc.ok} of ${cc.all} matches you opened were confirmed by the pattern detector on the daily chart` : "Open a match: its chart is checked by the pattern detector and counted here"}</span></div>}
       {votes && <div className="acc-c"><div className="label">Your 👍 rate on this pattern</div>
         <span>AI: {rate({ good: votes.ai.good + votes.both.good, all: votes.ai.all + votes.both.all })}</span>
         <span>Indicators: {rate({ good: votes.rule.good + votes.both.good, all: votes.rule.all + votes.both.all })}</span></div>}
+    </div>
+  );
+}
+
+// ---------- result search, filters, sort ----------
+const PER_PAGE = 20;
+type Sort = "score" | "change" | "rsi" | "p1" | "p3" | "cap" | "rv" | "name";
+type Filters = { q: string; sector: string; minPx: string; maxPx: string; minRsi: string; maxRsi: string; minScore: string; sort: Sort; dir: "desc" | "asc"; confirmed: boolean };
+const NO_FILTERS: Filters = { q: "", sector: "", minPx: "", maxPx: "", minRsi: "", maxRsi: "", minScore: "", sort: "score", dir: "desc", confirmed: false };
+const SORTS: [Sort, string][] = [["score", "Score"], ["change", "Today %"], ["p1", "1-month %"], ["p3", "3-month %"], ["rsi", "RSI"], ["rv", "Relative volume"], ["cap", "Market cap"], ["name", "Name"]];
+const num = (v: string) => (v.trim() === "" || Number.isNaN(Number(v)) ? undefined : Number(v));
+const sortKey = (r: Row, k: Sort): number | string | undefined =>
+  k === "score" ? r.score : k === "change" ? r.change : k === "rsi" ? r.m?.rsi : k === "p1" ? r.m?.p1 : k === "p3" ? r.m?.p3 : k === "cap" ? r.m?.cap : k === "rv" ? r.m?.rv : r.name;
+
+function applyFilters<T extends Row>(rows: T[], f: Filters): T[] {
+  const q = f.q.trim().toLowerCase(), minPx = num(f.minPx), maxPx = num(f.maxPx), minRsi = num(f.minRsi), maxRsi = num(f.maxRsi), minScore = num(f.minScore);
+  const checked = f.confirmed ? new Set(loadChecks().filter((c) => c.ok).map((c) => c.id)) : null;
+  const out = rows.filter((r) => {
+    if (q && ![r.symbol, r.name, r.description, r.sector, r.m?.industry].some((x) => x?.toLowerCase().includes(q))) return false;
+    if (f.sector && r.sector !== f.sector) return false;
+    if (minPx != null && (r.close == null || r.close < minPx)) return false;
+    if (maxPx != null && (r.close == null || r.close > maxPx)) return false;
+    if (minRsi != null && (r.m?.rsi == null || r.m.rsi < minRsi)) return false;
+    if (maxRsi != null && (r.m?.rsi == null || r.m.rsi > maxRsi)) return false;
+    if (minScore != null && r.score < minScore) return false;
+    if (checked && !checked.has(r.id ?? "")) return false;
+    return true;
+  });
+  const sign = f.dir === "asc" ? 1 : -1;
+  // Missing values sort last either way.
+  return out.sort((a, b) => {
+    const x = sortKey(a, f.sort), y = sortKey(b, f.sort);
+    if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1;
+    return (typeof x === "string" ? x.localeCompare(y as string) : (x as number) - (y as number)) * sign;
+  });
+}
+
+function ResultTools({ rows, f, set, shown }: { rows: Row[]; f: Filters; set: (f: Filters) => void; shown: number }) {
+  const sectors = useMemo(() => [...new Set(rows.map((r) => r.sector).filter(Boolean) as string[])].sort(), [rows]);
+  const up = (p: Partial<Filters>) => set({ ...f, ...p });
+  const box = (k: keyof Filters, ph: string, label: string) => (
+    <input className="flt-n" inputMode="decimal" placeholder={ph} aria-label={label} value={f[k] as string} onChange={(e) => up({ [k]: e.target.value } as Partial<Filters>)} />);
+  const active = JSON.stringify({ ...f, sort: "", dir: "" }) !== JSON.stringify({ ...NO_FILTERS, sort: "", dir: "" });
+  return (
+    <div className="flt" role="search">
+      <input className="flt-q" type="search" placeholder="Search symbol, name, sector…" aria-label="Search matches" value={f.q} onChange={(e) => up({ q: e.target.value })} />
+      <select aria-label="Sector" value={f.sector} onChange={(e) => up({ sector: e.target.value })}>
+        <option value="">All sectors</option>{sectors.map((s) => <option key={s} value={s}>{s}</option>)}
+      </select>
+      <span className="flt-g"><span className="label">Price</span>{box("minPx", "min", "Minimum price")}–{box("maxPx", "max", "Maximum price")}</span>
+      <span className="flt-g"><span className="label">RSI</span>{box("minRsi", "0", "Minimum RSI")}–{box("maxRsi", "100", "Maximum RSI")}</span>
+      <span className="flt-g"><span className="label">Score ≥</span>{box("minScore", "0", "Minimum score")}</span>
+      <label className="flt-g"><input type="checkbox" checked={f.confirmed} onChange={(e) => up({ confirmed: e.target.checked })} /> Chart-confirmed only</label>
+      <span className="flt-g"><span className="label">Sort</span>
+        <select aria-label="Sort by" value={f.sort} onChange={(e) => up({ sort: e.target.value as Sort, dir: e.target.value === "name" ? "asc" : "desc" })}>
+          {SORTS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+        </select>
+        <button type="button" className="btn flt-dir" aria-label={f.dir === "desc" ? "Highest first" : "Lowest first"} onClick={() => up({ dir: f.dir === "desc" ? "asc" : "desc" })}>{f.dir === "desc" ? "↓" : "↑"}</button></span>
+      {active && <button type="button" className="linkish" onClick={() => set({ ...NO_FILTERS, sort: f.sort, dir: f.dir })}>Clear filters ({shown} of {rows.length})</button>}
     </div>
   );
 }

@@ -54,6 +54,9 @@ export type ScanRow = {
   indicators?: { ok: boolean; text: string }[];
   /** This stock's past signals from the same rules, over the bars loaded. */
   bt?: BtSummary;
+  /** Screener figures for filtering and sorting the results: RSI 14, 1- and 3-month performance (%), volume
+   * against its 10-day average, market cap, industry. */
+  m?: { rsi?: number; p1?: number; p3?: number; rv?: number; cap?: number; industry?: string };
 };
 /** Backtest totals without the trade list, small enough to send and save. */
 export type BtSummary = { signals: number; wins: number; losses: number; open: number; avgRet: number; horizon: number };
@@ -81,12 +84,25 @@ export type ScanOptions = { analyzer?: Analyzer; ai: ModelChoice; verify?: Model
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((ok) => { const id = setTimeout(ok, ms); signal?.addEventListener("abort", () => { clearTimeout(id); ok(); }, { once: true }); });
 
-export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Promise<Extract<ScanEvent, { type: "results" }>> {
+export async function runScan(o: ScanOptions, send: (e: ScanEvent) => void): Promise<Extract<ScanEvent, { type: "results" }>> {
+  // Every row leaves with its screener figures, whichever way it was found.
+  let figures: (sym: string) => ScanRow["m"] = () => undefined;
+  const emit = (e: ScanEvent) => {
+    if (e.type === "match" || e.type === "results") for (const r of e.rows) r.m ??= figures(r.symbol);
+    send(e);
+  };
   const deadline = Date.now() + BUDGET_MS;
   const where = UNIVERSES[o.universe].label + (o.themes.length ? " · " + o.themes.map((t) => THEMES[t].label).join(", ") : "");
   emit({ type: "status", text: `Loading ${where} from TradingView` });
   // One run_screener call lists the market with each stock's quote snapshot (cached 4 h).
   const { stocks: members, snaps, prev, inds = {} } = await cachedJson(`universe5:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
+  const bySym = new Map(members.map((m) => [m.symbol, m]));
+  const round1 = (v?: number) => (v == null ? undefined : Math.round(v * 10) / 10);
+  figures = (sym) => {
+    const x = inds[sym] ?? {}, m = bySym.get(sym);
+    return { rsi: round1(x.RSI), p1: round1(x["Perf.1M"]), p3: round1(x["Perf.3M"]), rv: x.relative_volume_10d_calc == null ? undefined : Math.round(x.relative_volume_10d_calc * 100) / 100,
+      cap: m?.market_cap_basic, industry: m?.industry };
+  };
   const likely = rank(members, snaps, o.template?.id);
   // Needs Redis: on serverless hosting each request may run in a fresh instance, so states kept only in memory
   // would be lost between pages and every stock would be seeded again and again.
