@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { ccy, cls, fmtBig, fmtPct, fmtPx, market, type Market } from "./format";
 import Scanner, { Thumbs, type PatternHit } from "./scanner";
 import Candles, { type Ohlcv } from "./candles";
+import { confirmOnChart, recordCheck, type Confirmed } from "./confirm";
 import { currentModel, ModelSelect } from "./model";
 import { askRelogin, blockedText, blockTv, postWithRelogin, tvBlocked } from "./tvblock";
 import { DIV_LABEL, findDivergences } from "@/lib/scan/indicators";
@@ -270,13 +271,16 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
   // TradingView's free embedded chart can't show SET stocks, so those use our own candles.
   const tvOk = !!symbol && market(symbol) !== "SET";
   useEffect(() => { setMode(tvOk ? "tv" : "candles"); }, [symbol, tvOk]);
+  // A screener-only match has no marks yet: the pattern detector finds them on the chart loaded below.
+  const shown = useMemo<Confirmed | null>(() => (pattern && bars?.c?.length && pattern.symbol === symbol ? confirmOnChart(pattern, bars) : pattern), [pattern, bars, symbol]);
+  useEffect(() => { if (shown?.chart) recordCheck(shown); }, [shown]);
   // A pattern from the scanner is drawn on our candles, zoomed to fit.
   useEffect(() => {
-    if (!pattern) return;
+    if (!shown) return;
     setMode("candles");
-    const r = rangeSince(pattern.from);
+    const r = rangeSince(shown.from);
     setRange((RANGES.find((x) => x[2] === r) ?? RANGES[3])[1]);
-  }, [pattern]);
+  }, [shown?.id, shown?.from]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!symbol) return;
@@ -300,7 +304,7 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
 
   return (
     <section className="stack" aria-label="Selected symbol">
-      {pattern && symbol && <PatternPane p={pattern} all={patterns} onPick={onPickPattern} onClear={onClearPattern} onBack={onBackToScan} />}
+      {shown && symbol && <PatternPane p={shown} all={patterns} onPick={onPickPattern} onClear={onClearPattern} onBack={onBackToScan} />}
       <div className="pane">
         <div className="focus-h">
           <div>
@@ -328,11 +332,11 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
           </div>
         </div>
         <div className="chart-wrap">
-          {mode === "tv" && symbol ? <TvChart symbol={symbol} range={pattern ? rangeSince(pattern.from) : undefined} />
+          {mode === "tv" && symbol ? <TvChart symbol={symbol} range={shown ? rangeSince(shown.from) : undefined} />
             : err.chart ? <div className="note warn">{err.chart}</div>
             : !bars?.c?.length ? <div className="note">Loading chart…</div>
-            : mode === "candles" ? <Candles key={pattern?.id ?? "plain"} bars={bars} visible={range} overlay={pattern} divergences={showDiv} />
-            : <Chart bars={{ t: bars.t.slice(-252), c: bars.c.slice(-252) } as Bars} range={range} highlight={pattern} />}
+            : mode === "candles" ? <Candles key={(shown?.id ?? "plain") + (shown?.chart ? ":c" : "")} bars={bars} visible={range} overlay={shown} divergences={showDiv} />
+            : <Chart bars={{ t: bars.t.slice(-252), c: bars.c.slice(-252) } as Bars} range={range} highlight={shown} />}
         </div>
         {mode === "candles" && showDiv && bars?.c?.length ? <DivNote bars={bars} /> : null}
         <dl className="stats" style={{ margin: 0 }}>
@@ -378,7 +382,7 @@ function DivNote({ bars }: { bars: Bars }) {
   );
 }
 
-function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: PatternHit[]; onPick: (p: PatternHit) => void; onClear: () => void; onBack: () => void }) {
+function PatternPane({ p, all, onPick, onClear, onBack }: { p: Confirmed; all: PatternHit[]; onPick: (p: PatternHit) => void; onClear: () => void; onBack: () => void }) {
   const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
     `analyze pattern ${p.symbol} ${p.label} ${p.bars ? `${p.from} ${p.to}` : "(recent, from screener ranges)"} (${p.by === "rule" ? `scanner indicators: score ${p.score}` : `scanner AI: ${p.score}% sure`}, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
@@ -389,7 +393,11 @@ function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: 
           {all.length > 1 && <div className="chips" role="group" aria-label="Matches on this stock" style={{ margin: "6px 0" }}>
             {all.map((x, k) => <button key={x.id} type="button" className="chip" aria-pressed={x.id === p.id} onClick={() => onPick(x)}>
               Match {k + 1} · {x.from} to {x.to} · <span className="num">{x.score}%</span></button>)}</div>}
-          <div className="muted" style={{ fontSize: 12 }}>{p.bars ? <>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · the AI&apos;s points and lines are drawn on the chart below</> : <>Found from screener ranges and indicators only; check the outline on the chart below</>}</div>
+          <div className="muted" style={{ fontSize: 12 }}>{p.chart ? (p.chart.ok
+              ? <><span className="stage ok">✓ chart confirms</span> The pattern detector found it on the daily chart (score {p.chart.score}): {p.bars} days · {p.from} to {p.to}, drawn below</>
+              : <><span className="stage">chart doesn&apos;t confirm</span> Found from screener ranges and indicators; the pattern detector {p.chart.score ? `scored it only ${p.chart.score} on the daily chart` : "didn't find it on the daily chart"}{p.points?.length ? ", its best reading is drawn below" : ""}</>)
+            : p.bars ? <>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · the {p.by === "rule" ? "detector's" : "AI's"} points and lines are drawn on the chart below</>
+            : <>Found from screener ranges and indicators only; checking it on the chart…</>}</div>
           {p.summary && <div className="hit-ai" style={{ marginTop: 6 }}>{p.summary}</div>}
           {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {c}</span>)}</div>}
           {(p.breakout != null || p.invalidation != null) && <div className="hit-levels num" style={{ marginTop: 4 }}>
