@@ -85,7 +85,7 @@ const ANALYZERS: [Analyzer, string, string][] = [
   ["ai", "AI", "The AI reads each chart and judges it against the pattern"],
   ["rules", "Indicators (AI off)", "No AI and no chart calls: the whole market from one screener call. The pattern's outline from 1/3/6-month ranges, confirmed by RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume and candles"],
   ["compare", "AI vs indicators", "Both read the same charts, so you can see where they agree"],
-  ["screen_ai", "Indicator screen → AI", "Screener indicators (RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume, candles) filter the whole market in one TradingView call; only the best 20 that pass get a chart and an AI read"],
+  ["screen_ai", "Indicator screen → AI", "The same filter as Indicators (AI off): pattern outline from the screener ranges plus RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume and candles, over the whole market in one TradingView call. Only the best 20 that pass get a chart and an AI read"],
 ];
 const ANALYZER_STORE = "keranos.analyzer.v1";
 const BY: Record<By, string> = { ai: "AI only", rule: "Indicators only", both: "AI + indicators" };
