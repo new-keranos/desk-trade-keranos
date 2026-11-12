@@ -47,7 +47,10 @@ export function outline(b: B, pattern: string): { from: number; points: Pt[]; li
       const names: Record<string, [string, string]> = { ascending_triangle: ["Flat top", "Rising lows"], descending_triangle: ["Falling highs", "Flat bottom"],
         falling_wedge: ["Falling highs", "Falling lows"], rising_wedge: ["Rising highs", "Rising lows"], ascending_channel: ["Channel top", "Channel bottom"], descending_channel: ["Channel top", "Channel bottom"] };
       const [u, l] = names[pattern];
-      return { from: from(hA, lA), points: [lab(hA, "High"), lab(hB, "High"), lab(lA, "Low"), lab(lB, "Low")], lines: twoLines(u, l) };
+      // Triangles have one flat side: drawn level at the earlier extreme, not sloped through this month's.
+      const lines = pattern === "ascending_triangle" ? [flat(hA, u, "upper"), twoLines(u, l)[1]]
+        : pattern === "descending_triangle" ? [twoLines(u, l)[0], flat(lA, l, "lower")] : twoLines(u, l);
+      return { from: from(hA, lA), points: [lab(hA, "High"), lab(hB, "High"), lab(lA, "Low"), lab(lB, "Low")], lines };
     }
     case "double_bottom": case "triple_bottom": case "rsi_bullish_divergence": {
       const neck = hiIn(b, lA.i + 1, Math.max(lA.i + 2, lB.i));
