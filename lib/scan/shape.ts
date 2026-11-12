@@ -23,27 +23,32 @@ export function shapeOf(x: Ind, pattern: string): Shape {
   const pos1 = h1 > l1 ? (c - l1) / (h1 - l1) : 0.5;
   const near = (a: number, b: number, tol: number) => Math.abs(a - b) / Math.min(a, b) <= tol;
   const narrowing = (h3 - l3) > 0 ? (h1 - l1) / (h3 - l3) : 1;
+  // A retest needs an earlier extreme: when this month's high IS the 3-month high (h1 == h3) the stock is just
+  // making new highs, and "within 3% of the 3-month high" would pass every uptrend. So the earlier one must be
+  // strictly beyond this month's, which means it was set 1-3 months ago, and this month came back close to it.
+  const topRetest = (tol: number) => h1 < h3 * 0.999 && h1 >= h3 * (1 - tol);
+  const lowRetest = (tol: number) => l1 > l3 * 1.001 && l1 <= l3 * (1 + tol);
 
   switch (pattern) {
     case "ascending_triangle":
-      need(near(h1, h3, 0.03), `Flat top: 1-month high within ${pct(Math.abs(h1 / h3 - 1))} of the 3-month high`);
+      need(topRetest(0.03), h1 >= h3 * 0.999 ? "Flat top: no, this month set a new 3-month high (an uptrend, not a retest of an earlier top)" : `Flat top: 1-month high ${pct(1 - h1 / h3)} under the earlier 3-month high (3% max)`);
       need(l1 > l3 * 1.03, `Rising lows: 1-month low ${pct(l1 / l3 - 1)} above the 3-month low`);
       need(pos1 >= 0.5, `Close in the upper ${pos1 >= 0.5 ? "half" : "part"} of the month's range (${pct(pos1)})`);
       break;
     case "descending_triangle":
-      need(near(l1, l3, 0.03), `Flat bottom: 1-month low within ${pct(Math.abs(l1 / l3 - 1))} of the 3-month low`);
+      need(lowRetest(0.03), l1 <= l3 * 1.001 ? "Flat bottom: no, this month set a new 3-month low (a downtrend, not a retest)" : `Flat bottom: 1-month low ${pct(l1 / l3 - 1)} above the earlier 3-month low (3% max)`);
       need(h1 < h3 * 0.97, `Falling highs: 1-month high ${pct(1 - h1 / h3)} under the 3-month high`);
       need(pos1 <= 0.5, `Close in the lower half of the month's range (${pct(pos1)})`);
       break;
     case "double_bottom": case "triple_bottom":
       need(h6 != null && l6 != null && h6 > l6 * 1.12, "6-month range wide enough for a base (12%+)");
-      need(near(l1, l3, 0.04), `Retest: 1-month low within ${pct(Math.abs(l1 / l3 - 1))} of the 3-month low`);
+      need(lowRetest(0.04), l1 <= l3 * 1.001 ? "Retest: no, this month's low is the 3-month low (one bottom, not two)" : `Retest: 1-month low ${pct(l1 / l3 - 1)} above the earlier 3-month low (4% max)`);
       need(c > l1 * 1.03, `Bounced ${pct(c / l1 - 1)} off the low`);
       need(c < h3 * 0.97, "Still under the 3-month high (neckline not cleared)");
       break;
     case "double_top": case "head_shoulders":
       need(h6 != null && l6 != null && h6 > l6 * 1.12, "6-month range wide enough for a top (12%+)");
-      need(pattern === "double_top" ? near(h1, h3, 0.04) : h1 < h3 && h1 > h3 * 0.9, pattern === "double_top" ? `Retest: 1-month high within ${pct(Math.abs(h1 / h3 - 1))} of the 3-month high` : `Lower right shoulder: 1-month high ${pct(1 - h1 / h3)} under the 3-month high`);
+      need(pattern === "double_top" ? topRetest(0.04) : h1 < h3 && h1 > h3 * 0.9, pattern === "double_top" ? (h1 >= h3 * 0.999 ? "Retest: no, this month's high is the 3-month high (one top, not two)" : `Retest: 1-month high ${pct(1 - h1 / h3)} under the earlier 3-month high (4% max)`) : `Lower right shoulder: 1-month high ${pct(1 - h1 / h3)} under the 3-month high`);
       need(c < h1 * 0.97, `Turned down ${pct(1 - c / h1)} from the high`);
       need(c > l3 * 1.03, "Still above the 3-month low (neckline not broken)");
       break;

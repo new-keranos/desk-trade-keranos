@@ -30,8 +30,14 @@ check(!passes(screen({}, "double_bottom", "bullish")), "a stock with no indicato
 // Shapes from screener ranges (S&P 500 rows seen live 2026-11-12).
 const AAPL = { close: 355.63, "High.1M": 355.91, "Low.1M": 325.33, "High.3M": 355.91, "Low.3M": 302.94, "High.6M": 355.91, "Low.6M": 273.75, "Perf.W": 4.1, "Perf.1M": 5.1, "Perf.3M": 16.9 };
 const NVDA = { close: 173.73, "High.1M": 228.64, "Low.1M": 165.89, "High.3M": 243.37, "Low.3M": 165.89, "High.6M": 243.37, "Low.6M": 165.89, "Perf.W": -14.6, "Perf.1M": -24.0, "Perf.3M": -22.8 };
-const at = shapeOf(AAPL, "ascending_triangle");
-check(at.ok, "AAPL: flat top + rising lows reads as an ascending triangle", at.checks.map((v) => (v.ok ? "+" : "-") + v.text).join("; "));
+// AAPL made a new 3-month high this month: an uptrend, not a flat top retested (the old rule passed it).
+check(!shapeOf(AAPL, "ascending_triangle").ok, "AAPL (new 3-month high this month) is not an ascending triangle", "");
+check(!shapeOf(AAPL, "double_top").ok, "AAPL (one high, set this month) is not a double top", "");
+// A real flat top: the 3-month high came earlier, this month stalled 1.5% under it, lows rising.
+const TRI = { ...AAPL, "High.1M": 350.6, "High.3M": 355.91, close: 345 };
+const at = shapeOf(TRI, "ascending_triangle");
+check(at.ok, "flat top retested from below + rising lows reads as an ascending triangle", at.checks.map((v) => (v.ok ? "+" : "-") + v.text).join("; "));
+check(!shapeOf({ ...NVDA }, "double_bottom").ok, "NVDA (new low this month) is not a double bottom", "");
 check(!shapeOf(NVDA, "ascending_triangle").ok, "NVDA (falling, new low) is not an ascending triangle", "");
 check(!shapeOf(AAPL, "descending_triangle").ok && !shapeOf(AAPL, "bear_flag").ok, "AAPL is not a bearish shape", "");
 check(!shapeOf({ close: 10 }, "double_bottom").ok, "missing range data never matches", "");
