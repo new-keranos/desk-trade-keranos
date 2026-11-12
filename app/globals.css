@@ -289,11 +289,17 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 .hit-score small { display: block; font-size: 11px; font-weight: 400; }
 
 /* Scanner results: search, filters, sort, pages */
-.flt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0 4px; font-size: 12px; }
-.flt input, .flt select { background: var(--sunk); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; }
-.flt-q { flex: 1 1 220px; min-width: 160px; }
-.flt-g { display: inline-flex; align-items: center; gap: 4px; }
-.flt-n { width: 64px; }
-.flt-dir { padding: 3px 9px; }
+.flt { display: grid; gap: 10px; margin: 10px 0 6px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; font-size: 12px; }
+.flt-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.flt input, .flt select { background: var(--sunk); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font: inherit; min-height: 32px; }
+.flt-q { flex: 1 1 240px; min-width: 0; }
+.flt-sort { display: inline-flex; gap: 4px; margin-left: auto; }
+.flt-g { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.flt-l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-right: 2px; }
+.flt-n { width: 72px; }
+.flt-dir { padding: 3px 10px; min-height: 32px; }
+.flt-more { padding-top: 8px; border-top: 1px dashed var(--line); }
+.flt-foot { display: flex; align-items: center; gap: 12px; }
+@media (max-width: 640px) { .flt-sort { margin-left: 0; } .flt select { max-width: 100%; } }
 .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 10px 0; font-size: 12px; }
 .hit-m { font-size: 11px; }

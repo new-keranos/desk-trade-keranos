@@ -85,9 +85,11 @@ const ANALYZERS: [Analyzer, string, string][] = [
   ["ai", "AI", "The AI reads each chart and judges it against the pattern"],
   ["rules", "Indicators (AI off)", "No AI and no chart calls: the whole market from one screener call. The pattern's outline from 1/3/6-month ranges, confirmed by RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume and candles"],
   ["compare", "AI vs indicators", "Both read the same charts, so you can see where they agree"],
-  ["screen_ai", "Indicator screen → AI", "Screener indicators (RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume, candles) filter the whole market in one TradingView call; only the best 20 that pass get a chart and an AI read"],
+  ["screen_ai", "Indicator screen → AI", "The same filter as Indicators (AI off): pattern outline from the screener ranges plus RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume and candles, over the whole market in one TradingView call. Only the best 10, 20 or 30 that pass (you pick) get a chart and an AI read"],
 ];
-const ANALYZER_STORE = "keranos.analyzer.v1";
+const ANALYZER_STORE = "keranos.analyzer.v1", TOP_STORE = "keranos.top.v1";
+/** How many screened stocks "Indicator screen → AI" charts and sends to the AI (one get_ohlcv each). */
+const TOPS = [10, 20, 30] as const;
 const BY: Record<By, string> = { ai: "AI only", rule: "Indicators only", both: "AI + indicators" };
 /** Two backtest totals added (averages weighted by finished signals). */
 function addBt(a: Bt | undefined, b: Bt | undefined): Bt | undefined {
@@ -206,6 +208,9 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
   const [analyzer, setAnalyzerState] = useState<Analyzer>("ai");
   useEffect(() => { try { const v = localStorage.getItem(ANALYZER_STORE); if (v === "rules" || v === "compare" || v === "screen_ai") setAnalyzerState(v); } catch { /* default */ } }, []);
   const setAnalyzer = (v: Analyzer) => { setAnalyzerState(v); try { localStorage.setItem(ANALYZER_STORE, v); } catch { /* this tab only */ } };
+  const [top, setTopState] = useState<(typeof TOPS)[number]>(20);
+  useEffect(() => { try { const v = Number(localStorage.getItem(TOP_STORE)); if (v === 10 || v === 30) setTopState(v); } catch { /* default */ } }, []);
+  const setTop = (v: (typeof TOPS)[number]) => { setTopState(v); try { localStorage.setItem(TOP_STORE, String(v)); } catch { /* this tab only */ } };
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ text: string; done?: number; total?: number } | null>(null);
   const [result, setResult] = useState<Saved | null>(null);
@@ -248,7 +253,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
     const label = t?.name ?? "Your image pattern";
     ctl.current = new AbortController();
     const signal = ctl.current.signal;
-    const body = { analyzer: mode, ai: currentModel(), verify: mode === "rules" ? null : currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
+    const body = { analyzer: mode, ...(mode === "screen_ai" ? { top } : {}), ai: currentModel(), verify: mode === "rules" ? null : currentVerify(), feedback: feedbackFor(usingImage ? "image" : pattern), universe, themes, length, pattern: usingImage ? { image: { mime: img!.mime, data: img!.data } } : { template: pattern } };
     // One saved scan grows as matches arrive, page after page.
     const s: Saved = { id: Date.now().toString(36), at: new Date().toISOString(), universe, themes, length, rows: [], checked: 0, shape, label, pattern: usingImage ? "image" : pattern, analyzer: mode };
     const notes: string[] = [];
@@ -379,6 +384,12 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
           <select className="scan-model" value={mode} disabled={usingImage} aria-label="Analyze with" title={usingImage ? "Your image is always read by the AI" : ANALYZERS.find((a) => a[0] === mode)?.[2]}
             onChange={(e) => setAnalyzer(e.target.value as Analyzer)}>
             {ANALYZERS.map(([id, l]) => <option key={id} value={id}>Analyze: {l}</option>)}
+          </select>
+        )}
+        {!busy && mode === "screen_ai" && (
+          <select className="scan-model" value={top} aria-label="How many stocks the AI reads" title="The best screened stocks get one chart call each and an AI read"
+            onChange={(e) => setTop(Number(e.target.value) as (typeof TOPS)[number])}>
+            {TOPS.map((n) => <option key={n} value={n}>AI reads top {n}</option>)}
           </select>
         )}
         {!busy && mode !== "rules" && <ModelSelect className="scan-model" />}
@@ -527,28 +538,53 @@ function applyFilters<T extends Row>(rows: T[], f: Filters): T[] {
   });
 }
 
+/** Common RSI and score ranges, one tap each; "Custom" opens the number boxes. */
+const RSI_PRESETS: [string, string, string][] = [["Any", "", ""], ["Oversold < 30", "", "30"], ["30–70", "30", "70"], ["Overbought > 70", "70", ""]];
+const SCORE_PRESETS: [string, string][] = [["Any", ""], ["60+", "60"], ["75+", "75"]];
+
 function ResultTools({ rows, f, set, shown }: { rows: Row[]; f: Filters; set: (f: Filters) => void; shown: number }) {
   const sectors = useMemo(() => [...new Set(rows.map((r) => r.sector).filter(Boolean) as string[])].sort(), [rows]);
   const up = (p: Partial<Filters>) => set({ ...f, ...p });
   const box = (k: keyof Filters, ph: string, label: string) => (
     <input className="flt-n" inputMode="decimal" placeholder={ph} aria-label={label} value={f[k] as string} onChange={(e) => up({ [k]: e.target.value } as Partial<Filters>)} />);
   const active = JSON.stringify({ ...f, sort: "", dir: "" }) !== JSON.stringify({ ...NO_FILTERS, sort: "", dir: "" });
+  const rsiPreset = RSI_PRESETS.findIndex(([, lo, hi]) => lo === f.minRsi && hi === f.maxRsi);
+  const scorePreset = SCORE_PRESETS.findIndex(([, v]) => v === f.minScore);
+  const [more, setMore] = useState(false);
+  const showMore = more || !!f.minPx || !!f.maxPx || rsiPreset < 0 || scorePreset < 0;
   return (
     <div className="flt" role="search">
-      <input className="flt-q" type="search" placeholder="Search symbol, name, sector…" aria-label="Search matches" value={f.q} onChange={(e) => up({ q: e.target.value })} />
-      <select aria-label="Sector" value={f.sector} onChange={(e) => up({ sector: e.target.value })}>
-        <option value="">All sectors</option>{sectors.map((s) => <option key={s} value={s}>{s}</option>)}
-      </select>
-      <span className="flt-g"><span className="label">Price</span>{box("minPx", "min", "Minimum price")}–{box("maxPx", "max", "Maximum price")}</span>
-      <span className="flt-g"><span className="label">RSI</span>{box("minRsi", "0", "Minimum RSI")}–{box("maxRsi", "100", "Maximum RSI")}</span>
-      <span className="flt-g"><span className="label">Score ≥</span>{box("minScore", "0", "Minimum score")}</span>
-      <label className="flt-g"><input type="checkbox" checked={f.confirmed} onChange={(e) => up({ confirmed: e.target.checked })} /> Chart-confirmed only</label>
-      <span className="flt-g"><span className="label">Sort</span>
-        <select aria-label="Sort by" value={f.sort} onChange={(e) => up({ sort: e.target.value as Sort, dir: e.target.value === "name" ? "asc" : "desc" })}>
-          {SORTS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+      <div className="flt-row">
+        <input className="flt-q" type="search" placeholder="Search symbol, name or sector" aria-label="Search matches" value={f.q} onChange={(e) => up({ q: e.target.value })} />
+        <select aria-label="Sector" value={f.sector} onChange={(e) => up({ sector: e.target.value })}>
+          <option value="">All sectors</option>{sectors.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
-        <button type="button" className="btn flt-dir" aria-label={f.dir === "desc" ? "Highest first" : "Lowest first"} onClick={() => up({ dir: f.dir === "desc" ? "asc" : "desc" })}>{f.dir === "desc" ? "↓" : "↑"}</button></span>
-      {active && <button type="button" className="linkish" onClick={() => set({ ...NO_FILTERS, sort: f.sort, dir: f.dir })}>Clear filters ({shown} of {rows.length})</button>}
+        <span className="flt-sort">
+          <select aria-label="Sort by" value={f.sort} onChange={(e) => up({ sort: e.target.value as Sort, dir: e.target.value === "name" ? "asc" : "desc" })}>
+            {SORTS.map(([k, l]) => <option key={k} value={k}>Sort: {l}</option>)}
+          </select>
+          <button type="button" className="btn flt-dir" title={f.dir === "desc" ? "Highest first" : "Lowest first"} aria-label={f.dir === "desc" ? "Highest first" : "Lowest first"} onClick={() => up({ dir: f.dir === "desc" ? "asc" : "desc" })}>{f.dir === "desc" ? "↓" : "↑"}</button>
+        </span>
+      </div>
+      <div className="flt-row">
+        <span className="flt-g" role="group" aria-label="RSI"><span className="flt-l">RSI</span>
+          {RSI_PRESETS.map(([l, lo, hi], i) => <button key={l} type="button" className="chip" aria-pressed={i === rsiPreset} onClick={() => up({ minRsi: lo, maxRsi: hi })}>{l}</button>)}</span>
+        <span className="flt-g" role="group" aria-label="Score"><span className="flt-l">Score</span>
+          {SCORE_PRESETS.map(([l, v], i) => <button key={l} type="button" className="chip" aria-pressed={i === scorePreset} onClick={() => up({ minScore: v })}>{l}</button>)}</span>
+        <button type="button" className="chip" aria-pressed={f.confirmed} onClick={() => up({ confirmed: !f.confirmed })} title="Only matches you opened and the chart detector confirmed">✓ Chart-confirmed</button>
+        <button type="button" className="linkish" aria-expanded={showMore} onClick={() => setMore(!showMore)}>{showMore ? "Fewer filters" : "Price & custom ranges"}</button>
+      </div>
+      {showMore && (
+        <div className="flt-row flt-more">
+          <span className="flt-g"><span className="flt-l">Price</span>{box("minPx", "min", "Minimum price")}<span className="muted">to</span>{box("maxPx", "max", "Maximum price")}</span>
+          <span className="flt-g"><span className="flt-l">RSI</span>{box("minRsi", "0", "Minimum RSI")}<span className="muted">to</span>{box("maxRsi", "100", "Maximum RSI")}</span>
+          <span className="flt-g"><span className="flt-l">Score at least</span>{box("minScore", "0", "Minimum score")}</span>
+        </div>
+      )}
+      <div className="flt-foot">
+        <span className="muted"><b className="num">{shown}</b> of <span className="num">{rows.length}</span> matches</span>
+        {active && <button type="button" className="linkish" onClick={() => set({ ...NO_FILTERS, sort: f.sort, dir: f.dir })}>Clear filters</button>}
+      </div>
     </div>
   );
 }

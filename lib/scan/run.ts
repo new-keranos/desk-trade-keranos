@@ -79,7 +79,7 @@ export type ScanEvent =
   | { type: "error"; message: string; stop?: boolean; until?: number }
   | { type: "done" };
 
-export type ScanOptions = { analyzer?: Analyzer; ai: ModelChoice; verify?: ModelChoice; feedback?: Feedback[]; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; offset?: number; signal?: AbortSignal };
+export type ScanOptions = { analyzer?: Analyzer; top?: number; ai: ModelChoice; verify?: ModelChoice; feedback?: Feedback[]; tv: TvCaller; universe: UniverseId; themes: ThemeId[]; length: Length; template?: Template; image?: RefImage; limit?: number; offset?: number; signal?: AbortSignal };
 
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((ok) => { const id = setTimeout(ok, ms); signal?.addEventListener("abort", () => { clearTimeout(id); ok(); }, { once: true }); });
@@ -164,20 +164,24 @@ function runScreenOnly(o: ScanOptions, emit: (e: ScanEvent) => void, c: { member
   return Promise.resolve(r);
 }
 
-/** Indicator screen → AI: the screener columns (already on the call that listed the market) score every stock's
- * indicators against the pattern's direction. Only the best that pass the screen and fit the pattern's shape
- * from the quote data get a get_ohlcv call and an AI read: at most MAX_SCREENED, in one page. */
+/** Indicator screen → AI: the same filter as the AI-off mode (the pattern's outline in the screener ranges,
+ * ./shape.ts, plus the indicator screen, ./screen.ts) over every stock in the market, from the one screener call
+ * that listed it. Only the best `top` (10/20/30, default MAX_SCREENED) that pass get a get_ohlcv call and an AI read, in one page. */
 async function runScreened(o: ScanOptions, emit: (e: ScanEvent) => void, c: { members: Member[]; likely: Member[]; inds: Record<string, Awaited<ReturnType<typeof loadUniverse>>["inds"][string]>; where: string; deadline: number }) {
   const t = o.template!;
-  emit({ type: "status", text: `Screening ${c.members.length} stocks by indicators` });
+  emit({ type: "status", text: `Screening all ${c.members.length} stocks by shape and indicators` });
   const results = new Map<string, Screen>();
-  const order = new Map(c.likely.map((m, i) => [m.symbol, i]));
-  for (const m of c.likely) { const r = screen(c.inds[m.symbol] ?? {}, t.id, t.bias); if (passes(r)) results.set(m.symbol, r); }
-  // Best screen score first; ties keep the quote-data fit order.
-  const passed = c.likely.filter((m) => results.has(m.symbol))
-    .sort((a, b) => results.get(b.symbol)!.score - results.get(a.symbol)!.score || order.get(a.symbol)! - order.get(b.symbol)!);
-  const list = passed.slice(0, MAX_SCREENED);
-  const notes = [`Indicator screen: ${c.likely.length} of ${c.members.length} stocks in ${c.where} could fit ${t.name} from their quote data, ${passed.length} also passed the indicator screen (score ${MIN_SCREEN}+); ${list.length < passed.length ? `the best ${list.length} were` : list.length === 1 ? "it was" : `all ${list.length} were`} charted and read by the AI.`];
+  let shaped = 0;
+  for (const m of c.members) {
+    const x = c.inds[m.symbol] ?? {};
+    if (!shapeOf(x, t.id).ok) continue;
+    shaped++;
+    const r = screen(x, t.id, t.bias);
+    if (passes(r)) results.set(m.symbol, r);
+  }
+  const passed = c.members.filter((m) => results.has(m.symbol)).sort((a, b) => results.get(b.symbol)!.score - results.get(a.symbol)!.score);
+  const list = passed.slice(0, Math.min(Math.max(1, o.top ?? MAX_SCREENED), 30));
+  const notes = [`Indicator screen: ${shaped} of ${c.members.length} stocks in ${c.where} show the ${t.name} outline in their screener ranges, ${passed.length} also passed the indicator screen (score ${MIN_SCREEN}+); ${list.length < passed.length ? `the best ${list.length} were` : list.length === 1 ? "it was" : `all ${list.length} were`} charted and read by the AI.`];
   emit({ type: "page", total: list.length });
   if (!list.length) {
     const r = { type: "results" as const, rows: [], checked: 0, skipped: 0, total: 0, note: notes[0] };
