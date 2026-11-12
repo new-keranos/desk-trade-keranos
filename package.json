@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test:pivots": "node --experimental-strip-types scripts/test-pivots.ts",
     "test:rules": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/test-rules.ts",
+    "test:i18n": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/test-i18n.ts",
     "test:screen": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/test-screen.ts"
   },
   "dependencies": {

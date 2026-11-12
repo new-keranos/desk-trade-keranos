@@ -179,8 +179,13 @@ export function patternBrief(template?: Template) {
   return template ? `Pattern: ${DEFINITIONS[template.id] ?? template.name}` : "Pattern: the chart pattern in the attached reference image. Judge by the pattern's structure (its sequence of highs, lows and lines), not by its exact size or length.";
 }
 
-export type JudgeOptions = { ai: ModelChoice; template?: Template; image?: RefImage; length: Length; feedback?: Feedback[]; signal?: AbortSignal };
+export type JudgeOptions = { lang?: "th" | "en"; ai: ModelChoice; template?: Template; image?: RefImage; length: Length; feedback?: Feedback[]; signal?: AbortSignal };
 type View = { s: Stock } & ReturnType<typeof rowsFor>;
+
+/** The prompt asks for Thai labels and text; English when the user reads in English. */
+const systemFor = (lang?: "th" | "en") => lang === "en"
+  ? SYSTEM + "\nLanguage: write every point label, line label, evidence point and summary in English (e.g. \"Top\", \"Bottom 1\", \"Neckline\"), not Thai, even where the examples above are Thai."
+  : SYSTEM;
 
 /** The user's thumbs up and down on earlier matches of this pattern, so the AI learns what they count as one. */
 function feedbackBrief(f?: Feedback[]) {
@@ -196,7 +201,7 @@ export async function judgeBatch(stocks: Stock[], o: JudgeOptions): Promise<Verd
   const views = stocks.map((s) => ({ s, ...rowsFor(s.bars, o.length) }));
   const step = VIEW[o.length].step;
   const prompt = `${patternBrief(o.template)}${feedbackBrief(o.feedback)}\n${rowNote(step)}\n\n${views.map((v) => stockBlock(v, isDivergence(o.template?.id))).join("\n\n")}`;
-  const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, images: o.image ? [o.image] : [], schema: SCHEMA, signal: o.signal,
+  const raw = Reply.parse(await askJson({ ai: o.ai, system: systemFor(o.lang), prompt, images: o.image ? [o.image] : [], schema: SCHEMA, signal: o.signal,
     label: `${o.template?.name ?? "image pattern"} · ${stocks.map((s) => s.symbol).join(", ")}` }));
   return toVerdicts(raw, views, step);
 }
@@ -215,7 +220,7 @@ Verify it independently, as a strict senior reviewer. ${o.image ? "The first ima
 If it really is the pattern, return one result with match true, your own confidence and corrected points and lines (row numbers and prices from the rows). If not, return match false.
 
 ${stockBlock(view, isDivergence(o.template?.id))}`;
-  const raw = Reply.parse(await askJson({ ai: o.ai, system: SYSTEM, prompt, images: [...(o.image ? [o.image] : []), chartImage(view.rows)], schema: SCHEMA, signal: o.signal,
+  const raw = Reply.parse(await askJson({ ai: o.ai, system: systemFor(o.lang), prompt, images: [...(o.image ? [o.image] : []), chartImage(view.rows)], schema: SCHEMA, signal: o.signal,
     label: `verify ${o.template?.name ?? "image pattern"} · ${stock.symbol}` }));
   return toVerdicts(raw, [view], step)[0] ?? null;
 }

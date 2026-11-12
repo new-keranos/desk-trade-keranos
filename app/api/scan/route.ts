@@ -21,6 +21,7 @@ const Body = z.object({
    * screen_ai: indicator screen from the screener columns first, then get_ohlcv and the AI on the stocks that pass. */
   analyzer: z.enum(["ai", "rules", "compare", "screen_ai"]).default("ai"),
   /** screen_ai: how many of the best screened stocks get a chart and an AI read. */
+  lang: z.enum(["th", "en"]).default("th"),
   top: z.union([z.literal(10), z.literal(20), z.literal(30)]).optional(),
   ai: AiChoice.optional(),
   /** A model for the second check, or null to skip it. */
@@ -63,7 +64,7 @@ export async function POST(req: Request) {
       try {
         const image = "image" in pattern ? pattern.image : undefined;
         await traceRequest("scan", ai, { analyzer, universe, themes, length, offset, verify: verify?.model ?? "off", feedback: feedback?.length ?? 0, pattern: template?.name ?? "image" },
-          () => runScan({ analyzer, top: parsed.data.top, ai, verify, feedback, tv: tv.call, universe, themes, length, template, image, offset, signal: req.signal }, emit));
+          () => runScan({ analyzer, lang: parsed.data.lang, top: parsed.data.top, ai, verify, feedback, tv: tv.call, universe, themes, length, template, image, offset, signal: req.signal }, emit));
       } catch (err) {
         let message = "The scan was interrupted. Try again.";
         if (err instanceof Error && /TradingView|AI /.test(err.message)) message = err.message;

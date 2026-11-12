@@ -15,6 +15,7 @@ const Body = z.object({
   effort: z.enum(["low", "medium", "high"]).default("medium"),
   watchlist: z.array(z.string().max(64)).max(200).default([]),
   selected: z.string().max(64).nullable().default(null),
+  lang: z.enum(["th", "en"]).default("th"),
   ai: z.object({ provider: z.enum(["gemini", "claude", "openai"]), model: z.string().max(80) }).optional(),
 });
 
@@ -25,7 +26,7 @@ const openaiMessage = (err: InstanceType<typeof OpenAI.APIError>) =>
 export async function POST(req: Request) {
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Bad request" }, { status: 400 });
-  const { messages, effort, watchlist, selected } = parsed.data;
+  const { messages, effort, watchlist, selected, lang } = parsed.data;
   const ai = resolveChoice(parsed.data.ai);
   if (messages[messages.length - 1].role !== "user") return Response.json({ error: "Last message must be from the user" }, { status: 400 });
 
@@ -45,7 +46,7 @@ export async function POST(req: Request) {
       const emit = (e: NovaEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       try {
         await traceRequest("chat", ai, messages[messages.length - 1].content,
-          () => runNova({ history: messages, effort, ai, watchlist, selected, tv: tv.call, emit, signal: req.signal }));
+          () => runNova({ history: messages, effort, ai, watchlist, selected, lang, tv: tv.call, emit, signal: req.signal }));
       } catch (err) {
         let message = "Agent was interrupted. Send again to retry.";
         if (err instanceof ApiError) {

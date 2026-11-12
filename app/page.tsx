@@ -6,6 +6,8 @@ import Scanner, { Thumbs, type PatternHit } from "./scanner";
 import Candles, { type Ohlcv } from "./candles";
 import { confirmOnChart, recordCheck, type Confirmed } from "./confirm";
 import { currentModel, ModelSelect } from "./model";
+import { currentLang, setLang, useLang } from "./lang";
+import { LANGS, tr, trLabel } from "@/lib/i18n";
 import { askRelogin, blockedText, blockTv, postWithRelogin, tvBlocked } from "./tvblock";
 import { DIV_LABEL, findDivergences } from "@/lib/scan/indicators";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
@@ -96,6 +98,7 @@ export default function Desk() {
   const [selected, setSelected] = useState<string | null>(null);
   const [connect, setConnect] = useState<{ text: string; fresh?: boolean } | null>(null);
   const [view, setView] = useState<"desk" | "scanner">("desk");
+  const lang = useLang();
   const [pattern, setPattern] = useState<PatternHit | null>(null);
   // Every match the scan found on the same stock, so they can be shown one at a time.
   const [patterns, setPatterns] = useState<PatternHit[]>([]);
@@ -146,6 +149,10 @@ export default function Desk() {
           <div className="nav-h">Explore</div>
           <button className="nav-i" aria-current={view === "desk"} onClick={() => setView("desk")}><Icon d="M3 17l5-6 4 3 5-7 4 4M3 21h18" />Desk</button>
           <button className="nav-i" aria-current={view === "scanner"} onClick={() => setView("scanner")}><Icon d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15zM16 16l5 5M6.5 12l2.5-3 2 2 2.5-3.5" />Pattern scanner</button>
+          <div className="nav-lang" role="group" aria-label="Language for rule results, AI and Agent">
+            <span className="nav-h">ภาษา · Language</span>
+            <span className="chips">{LANGS.map(([id, l]) => <button key={id} type="button" className="chip" aria-pressed={lang === id} onClick={() => setLang(id)}>{l}</button>)}</span>
+          </div>
         </nav>
         <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={view === "desk" ? selected : null} onSelect={open}
           error={wlError} watchlistId={watchlistId} onChanged={(s) => { if (s) open(s); loadWatchlist(); }} />
@@ -272,8 +279,13 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
   const tvOk = !!symbol && market(symbol) !== "SET";
   useEffect(() => { setMode(tvOk ? "tv" : "candles"); }, [symbol, tvOk]);
   // A screener-only match has no marks yet: the pattern detector finds them on the chart loaded below.
-  const shown = useMemo<Confirmed | null>(() => (pattern && bars?.c?.length && pattern.symbol === symbol ? confirmOnChart(pattern, bars) : pattern), [pattern, bars, symbol]);
-  useEffect(() => { if (shown?.chart) recordCheck(shown); }, [shown]);
+  const lang = useLang();
+  const confirmed = useMemo<Confirmed | null>(() => (pattern && bars?.c?.length && pattern.symbol === symbol ? confirmOnChart(pattern, bars) : pattern), [pattern, bars, symbol]);
+  // Chart labels in the reader's language (the AI already writes them in it).
+  const shown = useMemo<Confirmed | null>(() => confirmed && lang === "th" ? { ...confirmed,
+    points: confirmed.points?.map((p) => ({ ...p, label: p.label && trLabel(p.label, lang) })),
+    lines: confirmed.lines?.map((l) => ({ ...l, label: trLabel(l.label, lang) })) } : confirmed, [confirmed, lang]);
+  useEffect(() => { if (confirmed?.chart) recordCheck(confirmed); }, [confirmed]);
   // A pattern from the scanner is drawn on our candles, zoomed to fit.
   useEffect(() => {
     if (!shown) return;
@@ -335,7 +347,7 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
           {mode === "tv" && symbol ? <TvChart symbol={symbol} range={shown ? rangeSince(shown.from) : undefined} />
             : err.chart ? <div className="note warn">{err.chart}</div>
             : !bars?.c?.length ? <div className="note">Loading chart…</div>
-            : mode === "candles" ? <Candles key={(shown?.id ?? "plain") + (shown?.chart ? ":c" : "")} bars={bars} visible={range} overlay={shown} divergences={showDiv} />
+            : mode === "candles" ? <Candles key={(shown?.id ?? "plain") + (shown?.chart ? ":c" : "") + lang} bars={bars} visible={range} overlay={shown} divergences={showDiv} />
             : <Chart bars={{ t: bars.t.slice(-252), c: bars.c.slice(-252) } as Bars} range={range} highlight={shown} />}
         </div>
         {mode === "candles" && showDiv && bars?.c?.length ? <DivNote bars={bars} /> : null}
@@ -383,6 +395,7 @@ function DivNote({ bars }: { bars: Bars }) {
 }
 
 function PatternPane({ p, all, onPick, onClear, onBack }: { p: Confirmed; all: PatternHit[]; onPick: (p: PatternHit) => void; onClear: () => void; onBack: () => void }) {
+  const lang = useLang();
   const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
     `analyze pattern ${p.symbol} ${p.label} ${p.bars ? `${p.from} ${p.to}` : "(recent, from screener ranges)"} (${p.by === "rule" ? `scanner indicators: score ${p.score}` : `scanner AI: ${p.score}% sure`}, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
@@ -398,8 +411,8 @@ function PatternPane({ p, all, onPick, onClear, onBack }: { p: Confirmed; all: P
               : <><span className="stage">chart doesn&apos;t confirm</span> Found from screener ranges and indicators; the pattern detector {p.chart.score ? `scored it only ${p.chart.score} on the daily chart` : "didn't find it on the daily chart"}{p.points?.length ? ", its best reading is drawn below" : ""}</>)
             : p.bars ? <>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · the {p.by === "rule" ? "detector's" : "AI's"} points and lines are drawn on the chart below</>
             : <>Found from screener ranges and indicators only; checking it on the chart…</>}</div>
-          {p.summary && <div className="hit-ai" style={{ marginTop: 6 }}>{p.summary}</div>}
-          {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {c}</span>)}</div>}
+          {p.summary && <div className="hit-ai" style={{ marginTop: 6 }}>{tr(p.summary, lang)}</div>}
+          {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {tr(c, lang)}</span>)}</div>}
           {(p.breakout != null || p.invalidation != null) && <div className="hit-levels num" style={{ marginTop: 4 }}>
             {p.breakout != null && <span>Breakout level <b>{fmtPx(p.breakout)}</b></span>}
             {p.invalidation != null && <span className="muted">Invalid past {fmtPx(p.invalidation)}</span>}</div>}</div>
@@ -548,7 +561,7 @@ function Console({ symbols, selected, watchlistId, onWatchlistChanged }: { symbo
     let answer = "";
     try {
       const res = await postWithRelogin("/api/nova", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.current.signal,
-        body: JSON.stringify({ messages: history, effort, watchlist: symbols, selected, ai: currentModel() }) });
+        body: JSON.stringify({ messages: history, effort, watchlist: symbols, selected, lang: currentLang(), ai: currentModel() }) });
       if (res.status === 401) { location.href = "/login"; return; }
       if (res.status === 409) {
         const j = await res.json().catch(() => ({}));
