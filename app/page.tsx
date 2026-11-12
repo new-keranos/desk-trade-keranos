@@ -381,7 +381,7 @@ function DivNote({ bars }: { bars: Bars }) {
 function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: PatternHit[]; onPick: (p: PatternHit) => void; onClear: () => void; onBack: () => void }) {
   const marks = (p.points ?? []).filter((x) => x.label).map((x) => `${x.label} ${x.price} on ${x.date}`).join(", ");
   const ask = () => window.dispatchEvent(new CustomEvent("nova:ask", { detail:
-    `analyze pattern ${p.symbol} ${p.label} ${p.from} ${p.to} (${p.by === "rule" ? `scanner indicators: score ${p.score}` : `scanner AI: ${p.score}% sure`}, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
+    `analyze pattern ${p.symbol} ${p.label} ${p.bars ? `${p.from} ${p.to}` : "(recent, from screener ranges)"} (${p.by === "rule" ? `scanner indicators: score ${p.score}` : `scanner AI: ${p.score}% sure`}, ${p.stage ?? "stage unknown"}${marks ? `, marked ${marks}` : ""}${p.breakout != null ? `, breakout ${p.breakout}` : ""}${p.invalidation != null ? `, invalidation ${p.invalidation}` : ""})` }));
   return (
     <div className="pane pattern-pane">
       <div className="pane-h">
@@ -389,7 +389,7 @@ function PatternPane({ p, all, onPick, onClear, onBack }: { p: PatternHit; all: 
           {all.length > 1 && <div className="chips" role="group" aria-label="Matches on this stock" style={{ margin: "6px 0" }}>
             {all.map((x, k) => <button key={x.id} type="button" className="chip" aria-pressed={x.id === p.id} onClick={() => onPick(x)}>
               Match {k + 1} · {x.from} to {x.to} · <span className="num">{x.score}%</span></button>)}</div>}
-          <div className="muted" style={{ fontSize: 12 }}>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · the AI&apos;s points and lines are drawn on the chart below</div>
+          <div className="muted" style={{ fontSize: 12 }}>{p.bars ? <>{p.bars} days · {p.from} to {p.to} · height {p.heightPct}% · the AI&apos;s points and lines are drawn on the chart below</> : <>Found from screener ranges and indicators only; check the outline on the chart below</>}</div>
           {p.summary && <div className="hit-ai" style={{ marginTop: 6 }}>{p.summary}</div>}
           {!!p.checks?.length && <div className="hit-checks">{p.checks.map((c) => <span key={c}>✓ {c}</span>)}</div>}
           {(p.breakout != null || p.invalidation != null) && <div className="hit-levels num" style={{ marginTop: 4 }}>

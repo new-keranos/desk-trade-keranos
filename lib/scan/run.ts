@@ -11,6 +11,7 @@ import { DETECTORS, detect, type Detection, type TrackState } from "./pivots";
 import { advance, forget, loadStates, saveStates, seedFromBars, seedsToday, SEEDS_PER_DAY } from "./tracker";
 import { loadUniverse, THEMES, UNIVERSES, type ThemeId, type UniverseId } from "./universe";
 import { MIN_SCREEN, passes, screen, type Screen } from "./screen";
+import { shapeOf } from "./shape";
 import { addBacktest, analyze, backtest, HORIZON, type Backtest, type RuleHit } from "./rules";
 
 /** Charts fetched per request; the browser asks for the next page a minute later. Small pages keep TradingView
@@ -85,11 +86,12 @@ export async function runScan(o: ScanOptions, emit: (e: ScanEvent) => void): Pro
   const where = UNIVERSES[o.universe].label + (o.themes.length ? " · " + o.themes.map((t) => THEMES[t].label).join(", ") : "");
   emit({ type: "status", text: `Loading ${where} from TradingView` });
   // One run_screener call lists the market with each stock's quote snapshot (cached 4 h).
-  const { stocks: members, snaps, prev, inds = {} } = await cachedJson(`universe4:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
+  const { stocks: members, snaps, prev, inds = {} } = await cachedJson(`universe5:${o.universe}:${o.themes.join(",")}`, () => loadUniverse(o.tv, o.universe, o.themes));
   const likely = rank(members, snaps, o.template?.id);
   // Needs Redis: on serverless hosting each request may run in a fresh instance, so states kept only in memory
   // would be lost between pages and every stock would be seeded again and again.
   // Compare mode skips it, so the AI and the rules read the same charts (the tracker would pick them by rule).
+  if (o.analyzer === "rules" && o.template && members.length) return runScreenOnly(o, emit, { members, inds, where });
   if (o.analyzer === "screen_ai" && o.template && members.length) return runScreened(o, emit, { members, likely, inds, where, deadline });
   const tracked = !o.image && !!o.template && !!DETECTORS[o.template.id] && o.analyzer !== "compare" && process.env.PATTERN_TRACKER !== "0" && hasRedis();
   if (tracked && members.length) return runTracked(o, emit, { members, likely, prev, where, deadline });
@@ -117,6 +119,34 @@ type Plan = { list: Member[]; total: number; next?: number; notes: string[]; dea
   screened?: Map<string, Screen>;
   /** Runs on the loaded charts before the AI reads them; returns the ones the AI should read. */
   pick?: (loaded: Stock[]) => Promise<Stock[]> };
+
+/** Indicators (AI off): the whole market from the one run_screener call, no get_ohlcv and no AI. Each stock must
+ * show the pattern's outline in its screener ranges (./shape.ts) and pass the indicator screen (./screen.ts). */
+function runScreenOnly(o: ScanOptions, emit: (e: ScanEvent) => void, c: { members: Member[]; inds: Record<string, Awaited<ReturnType<typeof loadUniverse>>["inds"][string]>; where: string }) {
+  const t = o.template!, today = new Date().toISOString().slice(0, 10);
+  emit({ type: "page", total: c.members.length });
+  emit({ type: "status", text: `Indicators are reading all ${c.members.length} stocks in ${c.where}` });
+  let shaped = 0;
+  const rows: ScanRow[] = [];
+  for (const m of c.members) {
+    const x = c.inds[m.symbol] ?? {}, sh = shapeOf(x, t.id);
+    if (!sh.ok) continue;
+    shaped++;
+    const sc = screen(x, t.id, t.bias);
+    if (!passes(sc)) continue;
+    rows.push({ id: `${m.symbol}@screen`, symbol: m.symbol, name: m.name, description: m.description, sector: m.sector, close: m.close, change: m.change,
+      score: sc.score, bars: 0, from: today, to: today, heightPct: sh.heightPct ?? 0, closes: [],
+      checks: sh.checks.map((v) => v.text), points: [], lines: [], by: "rule",
+      indicators: sc.signals.map(({ ok, text }) => ({ ok, text })),
+      summary: `Screener only: the ${t.name} outline from the 1/3/6-month ranges, ${sc.passed} indicator signals agree. Open it to check the chart.` });
+  }
+  rows.sort((a, b) => b.score - a.score);
+  if (rows.length) emit({ type: "match", rows });
+  const note = `Indicators read all ${c.members.length} stocks in ${c.where} from one screener call (no chart calls, no AI): ${shaped} show the ${t.name} outline in their price ranges, ${rows.length} of them also pass the indicator screen (score ${MIN_SCREEN}+). Screener columns give ranges, not turning points, so open a match to confirm it on the chart.`;
+  const r = { type: "results" as const, rows: o.limit ? rows.slice(0, o.limit) : rows, checked: c.members.length, skipped: 0, note, total: c.members.length };
+  emit(r);
+  return Promise.resolve(r);
+}
 
 /** Indicator screen → AI: the screener columns (already on the call that listed the market) score every stock's
  * indicators against the pattern's direction. Only the best that pass the screen and fit the pattern's shape

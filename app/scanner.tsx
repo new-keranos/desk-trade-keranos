@@ -80,7 +80,7 @@ type Saved = Result & { total?: number; id: string; at: string; universe: string
 
 const ANALYZERS: [Analyzer, string, string][] = [
   ["ai", "AI", "The AI reads each chart and judges it against the pattern"],
-  ["rules", "Indicators (AI off)", "No AI: a pivot detector finds the pattern and SMA50/200, RSI, MACD and volume confirm it; past signals are backtested"],
+  ["rules", "Indicators (AI off)", "No AI and no chart calls: the whole market from one screener call. The pattern's outline from 1/3/6-month ranges, confirmed by RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume and candles"],
   ["compare", "AI vs indicators", "Both read the same charts, so you can see where they agree"],
   ["screen_ai", "Indicator screen → AI", "Screener indicators (RSI, MACD, EMA/SMA, Bollinger, Stochastic, volume, candles) filter the whole market in one TradingView call; only the best 20 that pass get a chart and an AI read"],
 ];
@@ -392,7 +392,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
           </div>
           {(result.backtest || result.compare || result.analyzer === "rules" || result.analyzer === "compare") && <Accuracy r={result} votes={votes} />}
           {result.note && <div className="note">{result.note}</div>}
-          {!result.rows.length && <div className="note">{busy ? "No matches yet. They appear here as each batch of charts is read." : result.analyzer === "rules" ? "The indicator rules didn't score any chart 70 or more. Try another pattern or market." : <>The AI wasn&apos;t at least 70% sure about any chart. Try another pattern length, market or theme.</>}</div>}
+          {!result.rows.length && <div className="note">{busy ? "No matches yet. They appear here as each batch of charts is read." : result.analyzer === "rules" ? "No stock showed the pattern's outline and passed the indicator screen. Try another pattern or market." : <>The AI wasn&apos;t at least 70% sure about any chart. Try another pattern length, market or theme.</>}</div>}
           <ul className="hits">
             {hitsOf(result).map((r, _i, all) => {
               const same = all.filter((x) => x.symbol === r.symbol);
@@ -400,11 +400,11 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
               <li key={r.id} className="hit">
                 <button type="button" onClick={() => onOpen(r, same)} aria-label={`Open ${r.symbol}, ${r.by === "rule" ? "indicator score" : "AI"} ${r.score}${r.by === "rule" ? "" : "% sure"}`}>
                   <span className="hit-t"><b>{r.name}</b>{same.length > 1 && <span className="stage">{same.indexOf(r) + 1} of {same.length}</span>}<span className="mkt">{market(r.symbol)}</span>{r.stage && <span className="stage">{STAGE[r.stage] ?? r.stage}</span>}{r.verified === true && <span className="stage ok" title="A second AI pass looked at the chart picture and confirmed it">✓ checked</span>}{r.verified === false && <span className="stage" title="The second check couldn't run, so this is the first read only">unchecked</span>}{r.by && <span className={"stage by-" + r.by}>{BY[r.by]}</span>}<span className="hit-d">{r.description}</span></span>
-                  <span className="hit-score num" title={r.by === "rule" ? "Indicator score: pattern shape 70%, indicator checks 30%" : r.rule != null ? `AI ${r.score}%, indicators ${r.rule}` : "AI confidence"}>{r.by === "rule" ? r.score : `${r.score}%`}{r.rule != null && <small className="muted">{result.analyzer === "screen_ai" ? "screen" : "ind"} {r.rule}</small>}</span>
+                  <span className="hit-score num" title={r.by === "rule" ? "Indicator score" : r.rule != null ? `AI ${r.score}%, indicators ${r.rule}` : "AI confidence"}>{r.by === "rule" ? r.score : `${r.score}%`}{r.rule != null && <small className="muted">{result.analyzer === "screen_ai" ? "screen" : "ind"} {r.rule}</small>}</span>
                   <MatchChart closes={r.closes} shape={result.shape} points={r.points} bars={r.bars} />
                   <span className="hit-meta">
                     <span className="num">{fmtPx(r.close)} <span className={cls(r.change)}>{fmtPct(r.change)}</span></span>
-                    <span>{r.bars} days · {fmtDay(r.from)} – {fmtDay(r.to)} · height {r.heightPct}%</span>
+                    <span>{r.bars ? <>{r.bars} days · {fmtDay(r.from)} – {fmtDay(r.to)} · height {r.heightPct}%</> : <>Screener snapshot {fmtDay(r.to)} · 3-month range {r.heightPct}%</>}</span>
                     {r.sector && <span className="muted">{r.sector}</span>}
                     {r.summary && <span className="hit-ai">{r.summary}</span>}
                     {!!r.checks?.length && <span className="hit-checks">{r.checks.map((c) => <span key={c}>✓ {c}</span>)}</span>}
@@ -418,7 +418,7 @@ export default function Scanner({ onOpen, hidden }: { onOpen: (hit: PatternHit, 
               </li>
             ); })}
           </ul>
-          <p className="note">{result.analyzer === "rules" ? "The score is the pattern detector's 0-100 fit blended with the indicator checks (70/30), no AI involved." : "The % is the AI's confidence after reading the daily bars."} It is a starting point for your own chart reading, not a confirmed setup or advice.</p>
+          <p className="note">{result.analyzer === "rules" ? "The score is the share of indicator signals that agree with the pattern (0-100), from screener data only, no AI." : "The % is the AI's confidence after reading the daily bars."} It is a starting point for your own chart reading, not a confirmed setup or advice.</p>
         </div>
       )}
       <div className="scan-saved">
@@ -474,6 +474,8 @@ function MatchChart({ closes, shape, points, bars }: { closes: number[]; shape: 
   const W = 220, H = 64, P = 4;
   const lo = Math.min(...closes), hi = Math.max(...closes), d = hi - lo || 1;
   const line = (ys: number[]) => ys.map((y, i) => `${(P + (i / (ys.length - 1)) * (W - 2 * P)).toFixed(1)},${(P + (1 - y) * (H - 2 * P)).toFixed(1)}`).join(" ");
+  // Screener-only matches have no bars: show the pattern's reference shape alone.
+  if (!closes.length) return <svg className="hit-chart" viewBox={`0 0 ${W} ${H}`} aria-hidden="true"><polyline points={line(shape)} fill="none" stroke="var(--accent-fill)" strokeWidth="1.5" strokeDasharray="4 3" opacity=".9" /></svg>;
   return (
     <svg className="hit-chart" viewBox={`0 0 ${W} ${H}`} aria-hidden="true">
       {points?.length ? (

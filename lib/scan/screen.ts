@@ -6,12 +6,12 @@
 
 import { isDivergence, type Bias } from "./templates";
 
-/** Screener columns the screen reads (all checked live on SET50, 2026-11-11). */
+/** Screener columns the screen reads (checked live on SET50 2026-11-11 and S&P 500 2026-11-12). */
 export const SCREEN_COLS = ["RSI[1]", "SMA200", "EMA20", "EMA50", "MACD.macd", "MACD.signal", "relative_volume_10d_calc", "ADX", "Stoch.K",
   "BB.lower", "BB.upper", "Recommend.All", "Candle.Hammer", "Candle.Engulfing.Bullish", "Candle.MorningStar", "Candle.3WhiteSoldiers",
-  "Candle.ShootingStar", "Candle.Engulfing.Bearish", "Candle.EveningStar", "Candle.3BlackCrows"] as const;
+  "Candle.ShootingStar", "Candle.Engulfing.Bearish", "Candle.EveningStar", "Candle.3BlackCrows", "High.1M", "Low.1M", "Perf.W", "Perf.6M"] as const;
 /** Columns the screen also reads that the prefilter already asks for. */
-const SHARED = ["close", "RSI", "SMA50"] as const;
+const SHARED = ["close", "RSI", "SMA50", "Perf.1M", "Perf.3M", "High.3M", "Low.3M", "High.6M", "Low.6M"] as const;
 
 export type Ind = Partial<Record<(typeof SCREEN_COLS)[number] | (typeof SHARED)[number], number>>;
 
