@@ -318,3 +318,33 @@ input[type="text"], input[type="password"], input:not([type]) { outline: none; }
 @media (max-width: 640px) { .flt-sort { margin-left: 0; } .flt select { max-width: 100%; } }
 .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 10px 0; font-size: 12px; }
 .hit-m { font-size: 11px; }
+
+/* Daily picks and watchlist divergence signals */
+.daily[hidden] { display: none; }
+.daily .flt-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.daily .flt-l { font-size: 12px; color: var(--muted); min-width: 150px; }
+.daily-hit { display: flex; flex-direction: column; align-items: flex-start; padding-bottom: 10px; }
+.daily-add { padding: 5px 12px; }
+.warn-t { color: var(--down, #d9534f); font-weight: 500; }
+.sig-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 8px 6px; }
+.sig-tools .chip { padding: 2px 10px; }
+.sig-fresh { font-size: 11px; }
+.sig-list { list-style: none; margin: 0; padding: 0; max-height: 40vh; overflow-y: auto; }
+.sig-list li { padding: 2px 0; }
+.sig-list li.fresh .sig-row { background: var(--accent-soft); }
+.sig-row { width: 100%; display: flex; flex-direction: column; gap: 2px; text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: var(--r-sm); }
+.sig-row:hover { background: var(--raised); }
+.sig-t { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 6px; }
+.sig-t .stage { margin-left: 0; }
+.sig-d { font-size: 12px; color: var(--muted); }
+.sig-rv { font-size: 11px; color: var(--faint); }
+.sig-rv.hi { color: var(--accent); font-weight: 500; }
+.stage.sig-confirmed { border-color: var(--up, #2e9e5b); color: var(--up, #2e9e5b); }
+.stage.sig-forming { border-color: var(--accent); color: var(--accent); }
+.sig-alert { margin: 0 10px 4px; padding: 2px 10px; font-size: 11px; }
+.sig-new { border: 0; background: var(--accent-soft); color: var(--ink); border-radius: 99px; padding: 1px 8px; font-size: 11px; }
+.sig-msg { margin: 4px 10px; font-size: 12px; }
+.sig-foot { margin: 4px 10px 0; font-size: 11px; }
+.hits button.daily-add { width: auto; display: inline-block; border: 1px solid var(--line-strong); padding: 5px 12px; margin-left: 18px; }
+.hits button.daily-add:disabled { opacity: .7; }
+.hits button.daily-open { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "t s" "m m"; }

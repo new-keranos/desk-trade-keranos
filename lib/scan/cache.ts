@@ -31,14 +31,14 @@ export async function storeBars(symbol: string, count: number, bars: Bars): Prom
 }
 
 /** Any small JSON result (e.g. a market's member list), cached the same way. */
-export async function cachedJson<T>(name: string, load: () => Promise<T>): Promise<T> {
+export async function cachedJson<T>(name: string, load: () => Promise<T>, ttlS = TTL_S): Promise<T> {
   const k = `keranos:json:${name}`, m = mem.get(k);
-  if (m && Date.now() - m.at < TTL_S * 1000) return m.value as T;
+  if (m && Date.now() - m.at < ttlS * 1000) return m.value as T;
   if (hasRedis()) {
     try { const v = (await redis(["GET", k])) as string | null; if (v) { const value = JSON.parse(v) as T; mem.set(k, { at: Date.now(), value }); return value; } } catch { /* fetch it */ }
   }
   const value = await load();
   mem.set(k, { at: Date.now(), value });
-  if (hasRedis()) await redis(["SET", k, JSON.stringify(value), "EX", String(TTL_S)]).catch(() => {});
+  if (hasRedis()) await redis(["SET", k, JSON.stringify(value), "EX", String(ttlS)]).catch(() => {});
   return value;
 }

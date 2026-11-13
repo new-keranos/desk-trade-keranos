@@ -22,7 +22,7 @@ export const DIV_LABEL: Record<DivKind, string> = {
 };
 
 /** Bars whose low (or high) is the extreme of `left` bars before and `right` bars after. */
-function pivots(v: number[], low: boolean, left: number, right: number) {
+export function pivots(v: number[], low: boolean, left: number, right: number) {
   const out: number[] = [];
   for (let k = left; k < v.length - right; k++) {
     let ok = true;

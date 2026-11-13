@@ -11,10 +11,13 @@ import { LANGS, tr, trLabel } from "@/lib/i18n";
 import { askRelogin, blockedText, blockTv, postWithRelogin, tvBlocked } from "./tvblock";
 import { DIV_LABEL, findDivergences } from "@/lib/scan/indicators";
 import TvChart, { rangeSince, tvChartUrl, type TvRange } from "./tvchart";
+import EarlyScan from "./early-scan";
+import { rememberBars, SignalsPanel } from "./watch";
 
 // ---------- helpers ----------
 type Quote = { description?: string; close?: number; change?: number; change_abs?: number; volume?: number | null;
-  market_cap_basic?: number | null; price_earnings_ttm?: number | null; sector?: string | null; high?: number; low?: number };
+  market_cap_basic?: number | null; price_earnings_ttm?: number | null; sector?: string | null; high?: number; low?: number;
+  open?: number; relative_volume_10d_calc?: number; update_mode?: string };
 type Bars = Ohlcv;
 type Tech = { price?: number; summary?: { recommendation?: string; value?: number; ma?: string };
   oscillators?: Record<string, number>; moving_averages?: Record<string, number> };
@@ -83,7 +86,9 @@ function md(text: string) {
 }
 
 const PULSE: [string, string][] = [["SP:SPX", "S&P 500"], ["NASDAQ:NDX", "Nasdaq 100"], ["SET:SET", "SET"], ["BINANCE:BTCUSDT", "BTC"], ["CRYPTOCAP:TOTAL", "Crypto cap"]];
-const QUOTE_COLS = ["name", "description", "close", "change", "change_abs", "volume", "market_cap_basic", "price_earnings_ttm", "sector", "high", "low"];
+// open, relative volume and update_mode feed the watchlist divergence signals (./watch.tsx) on this same call.
+const QUOTE_COLS = ["name", "description", "close", "change", "change_abs", "volume", "market_cap_basic", "price_earnings_ttm", "sector", "high", "low",
+  "open", "relative_volume_10d_calc", "update_mode"];
 const CMDS: [string, string][] = [["brief", "brief"], ["analyze", "analyze"], ["compare", "compare NASDAQ:AAPL NASDAQ:MSFT"], ["scan", "scan momentum US"],
   ["pattern", "pattern double bottom SET100"], ["divergence", "RSI divergence"],
   ["SET dividends", "dividends SET"], ["earnings", "earnings this week"], ["macro US", "macro US"], ["macro TH", "macro TH"]];
@@ -105,7 +110,7 @@ export default function Desk() {
   const [filter, setFilter] = useState<"all" | Market>("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [connect, setConnect] = useState<{ text: string; fresh?: boolean } | null>(null);
-  const [view, setView] = useState<"desk" | "scanner">("desk");
+  const [view, setView] = useState<"desk" | "scanner" | "early">("desk");
   const lang = useLang();
   const [pattern, setPattern] = useState<PatternHit | null>(null);
   // Every match the scan found on the same stock, so they can be shown one at a time.
@@ -138,6 +143,7 @@ export default function Desk() {
   const target = named.find((w) => w.id === addPick) ?? (shown && shown.type !== "colored" ? shown : named[0]);
   const watchlistId = target?.id ?? null;
   const symbols = useMemo(() => shown?.symbols ?? [], [shown]);
+  const inAnyList = useMemo(() => new Set(lists.flatMap((w) => w.symbols)), [lists]);
   useEffect(() => { setSelected((cur) => cur ?? symbols.find((s) => market(s) === "US") ?? symbols[0] ?? null); }, [symbols]);
   const viewList = (id: string) => { setViewId(id); save(WL_VIEW, id); if (lists.find((w) => w.id === id)?.type !== "colored") { setAddPick(id); save(WL_ADD, id); } };
   const pickTarget = (id: string) => { setAddPick(id); save(WL_ADD, id); };
@@ -164,6 +170,7 @@ export default function Desk() {
           <div className="nav-h">Explore</div>
           <button className="nav-i" aria-current={view === "desk"} onClick={() => setView("desk")}><Icon d="M3 17l5-6 4 3 5-7 4 4M3 21h18" />Desk</button>
           <button className="nav-i" aria-current={view === "scanner"} onClick={() => setView("scanner")}><Icon d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15zM16 16l5 5M6.5 12l2.5-3 2 2 2.5-3.5" />Pattern scanner</button>
+          <button className="nav-i" aria-current={view === "early"} onClick={() => setView("early")}><Icon d="M3 7l5 6 4-3 4 5M17 15l4-4M17 11h4v4" />{lang === "th" ? "สัญญาณก่อนขึ้น" : "Early signals"}</button>
           <div className="nav-lang" role="group" aria-label="Language for rule results, AI and Agent">
             <span className="nav-h">ภาษา · Language</span>
             <span className="chips">{LANGS.map(([id, l]) => <button key={id} type="button" className="chip" aria-pressed={lang === id} onClick={() => setLang(id)}>{l}</button>)}</span>
@@ -171,13 +178,14 @@ export default function Desk() {
         </nav>
         <Watchlist symbols={symbols} quotes={quotes} filter={filter} setFilter={setFilter} selected={view === "desk" ? selected : null} onSelect={open}
           error={wlError} watchlistId={watchlistId} lists={lists} shown={shown} target={target} onView={viewList} onChanged={(s) => { if (s) open(s); loadWatchlist(); }} />
+        <SignalsPanel tv={tv} symbols={symbols} quotes={quotes} onSelect={open} />
         <Alerts />
         <p className="foot">Data from TradingView, delayed or realtime per your plan. Agent&apos;s answers are research, not financial advice.</p>
       </aside>
 
       <main className="main">
         <header className="topbar">
-          <h2>{view === "desk" ? "Desk" : "Pattern scanner"}</h2>
+          <h2>{view === "desk" ? "Desk" : view === "early" ? (lang === "th" ? "สัญญาณก่อนขึ้น" : "Early signals") : "Pattern scanner"}</h2>
           <div className="pulse" aria-label="Market pulse">
             {PULSE.map(([s, n]) => {
               const q = quotes[s];
@@ -200,6 +208,8 @@ export default function Desk() {
         <div className="content">
           {/* The scanner stays mounted so a finished scan is still there after visiting the desk. */}
           <Scanner hidden={view !== "scanner"} onOpen={(hit, same) => { setPattern(hit); setPatterns(same); open(hit.symbol); document.querySelector(".main")?.scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }} />
+          <EarlyScan hidden={view !== "early"} tv={tv} inWatchlist={inAnyList} targetName={target ? wlName(target) : undefined} targetId={watchlistId}
+            onWatchlistChanged={loadWatchlist} onOpen={(s) => { setPattern(null); open(s); }} />
           {view === "desk" && (
             <Focus symbol={selected} quote={selected ? quotes[selected] : undefined}
               pattern={pattern?.symbol === selected ? pattern : null} patterns={patterns} onPickPattern={setPattern} onClearPattern={() => setPattern(null)} onBackToScan={() => setView("scanner")}
@@ -323,7 +333,7 @@ function Focus({ symbol, quote, pattern, patterns, onPickPattern, onClearPattern
     let live = true;
     setBars(null); setTech(null); setNews(null); setErr({});
     const fail = (k: "chart" | "tech" | "news") => (e: Error) => live && setErr((x) => ({ ...x, [k]: e.message }));
-    tv<{ bars?: Bars }>("mcp-tv-get-ohlcv", { symbol, interval: "1D", count: 500, format: "columns" }).then((d) => live && setBars(d.bars ?? null)).catch(fail("chart"));
+    tv<{ bars?: Bars }>("mcp-tv-get-ohlcv", { symbol, interval: "1D", count: 500, format: "columns" }).then((d) => { rememberBars(symbol, d.bars); if (live) setBars(d.bars ?? null); }).catch(fail("chart"));
     tv<{ data?: Tech }>("mcp-tv-get-technicals-rating", { symbol, interval: "1D" }).then((d) => live && setTech(d.data ?? null)).catch(fail("tech"));
     tv<{ data?: { headlines?: Headline[] } }>("mcp-tv-get-news", { symbol, limit: 6 }).then((d) => live && setNews(d.data?.headlines ?? [])).catch(fail("news"));
     return () => { live = false; };
