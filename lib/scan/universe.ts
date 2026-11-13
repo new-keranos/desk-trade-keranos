@@ -10,6 +10,9 @@ export const UNIVERSES = {
   NDX: { label: "Nasdaq 100", args: { market: "america", filters: { index: "Nasdaq 100" } } },
   SET50: { label: "SET50", args: { market: "thailand", symbolset: ["SYML:SET;SET50"] } },
   SET100: { label: "SET100", args: { market: "thailand", symbolset: ["SYML:SET;SET100"] } },
+  /** Wider markets for the early-divergence scan, which filters by money traded itself. */
+  US_LARGE: { label: "US stocks $10B+", args: { market: "america", symbol_types: ["stock"], filters: { market_cap_basic: [10e9, null] } } },
+  SET_LARGE: { label: "SET stocks ฿5B+", args: { market: "thailand", symbol_types: ["stock"], filters: { market_cap_basic: [5e9, null] } } },
 } as const;
 export type UniverseId = keyof typeof UNIVERSES;
 
@@ -45,7 +48,7 @@ type Row = Stock & Record<string, unknown>;
 const COLS_PER_CALL = 16;
 const tooBig = (err: unknown) => /exceeds limit/i.test((err as Error)?.message ?? "");
 
-async function screenerRows(tv: TvCaller, universe: UniverseId, cols: string[]): Promise<Row[]> {
+export async function screenerRows(tv: TvCaller, universe: UniverseId, cols: string[]): Promise<Row[]> {
   const call = async (columns: string[]): Promise<Row[]> => {
     try {
       const res = (await tv(TV.screener, { ...UNIVERSES[universe].args, columns: ["name", ...columns.filter((c) => c !== "name")],

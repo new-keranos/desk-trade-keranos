@@ -21,6 +21,12 @@ type Rule = [RegExp, (m: RegExpMatchArray) => string];
 const r = (src: string, f: (m: RegExpMatchArray) => string): Rule => [new RegExp(`^${src}$`), f];
 
 const RULES: Rule[] = [
+  // Early-divergence scan (lib/scan/early.ts)
+  r(`New 1-month low at ${N} \\(3-month low ${N}\\)`, (m) => `ทำ low ใหม่ของ 1 เดือนที่ ${m[1]} (low 3 เดือน ${m[2]})`),
+  r(`RSI ${N} held above oversold at the new low`, (m) => `RSI ${m[1]} ไม่ลงไปโซน oversold แม้ราคาทำ low ใหม่`),
+  r(`${N} above the 3-month low ${N}`, (m) => `อยู่เหนือ low 3 เดือน (${m[2]}) ${m[1]}`),
+  r(`Down ${N} this week`, (m) => `สัปดาห์นี้ลง ${m[1]}`),
+  r(`RSI ${N} still firm`, (m) => `RSI ${m[1]} ยังไม่อ่อนตาม`),
   // Screener shapes (lib/scan/shape.ts)
   r("Screener range data missing", () => "ไม่มีข้อมูลช่วงราคาจาก screener"),
   r("Flat top: no, this month set a new 3-month high \\(an uptrend, not a retest of an earlier top\\)", () => "ยอดแบน: ไม่ผ่าน เดือนนี้ทำ high ใหม่ของ 3 เดือน (เป็นขาขึ้น ไม่ใช่การกลับมาทดสอบยอดเดิม)"),
